@@ -150,6 +150,13 @@ async function ensureDatabaseSchema(env) {
   try { await env.DB.prepare("ALTER TABLE projects ADD COLUMN deleted_at TEXT").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE units ADD COLUMN is_deleted INTEGER DEFAULT 0").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE units ADD COLUMN deleted_at TEXT").run(); } catch(e){}
+  
+  // Ensure users has permissions and transactions has approval columns
+  try { await env.DB.prepare("ALTER TABLE users ADD COLUMN permissions TEXT").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approval_status TEXT DEFAULT 'approved'").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approved_amount REAL").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approved_by TEXT").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approved_date TEXT").run(); } catch(e){}
 
   // Auto-seed if companies table is empty
   try {
@@ -1006,6 +1013,30 @@ export default {
         return new Response(JSON.stringify({ status: "success", message: "طرف حساب با موفقیت حذف شد" }), { headers: corsHeaders });
       }
 
+      // Approve/Reject Transaction
+      if (path === "/api/transactions/approve" && method === "POST") {
+        const body = await request.json();
+        const { id, approvalStatus, approvedAmount, approvedBy, approvedDate } = body;
+        
+        if (!id) {
+          return new Response(JSON.stringify({ error: "شناسه تراکنش الزامی است" }), { status: 400, headers: corsHeaders });
+        }
+        
+        await env.DB.prepare(`
+          UPDATE transactions
+          SET approval_status = ?, approved_amount = ?, approved_by = ?, approved_date = ?
+          WHERE id = ?
+        `).bind(
+          approvalStatus || "approved",
+          approvedAmount !== undefined ? Number(approvedAmount) : null,
+          approvedBy || null,
+          approvedDate || null,
+          id
+        ).run();
+        
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
+      }
+
       // Delete Transaction
       if (path === "/api/transactions/delete" && method === "POST") {
         const body = await request.json();
@@ -1213,26 +1244,29 @@ export default {
         const body = await request.json();
         const id = body.id || "u_" + Date.now();
         const { name, role, roleName, username, password } = body;
+        const permissionsJson = JSON.stringify(body.permissions || []);
 
         await env.DB.prepare(`
-          INSERT INTO users (id, name, role, role_name, username, password)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO users (id, name, role, role_name, username, password, permissions)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             role = excluded.role,
             role_name = excluded.role_name,
             username = excluded.username,
-            password = excluded.password
+            password = excluded.password,
+            permissions = excluded.permissions
         `).bind(
           id,
           name,
           role || "supervisor",
           roleName || "ناظر پروژه",
           username ? username.trim() : "",
-          password ? password.trim() : ""
+          password ? password.trim() : "",
+          permissionsJson
         ).run();
 
-        return new Response(JSON.stringify({ status: "success", user: { id, name, role, roleName, username, password } }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ status: "success", user: { id, name, role, roleName, username, password, permissions: body.permissions || [] } }), { headers: corsHeaders });
       }
 
       // Get settings
@@ -1349,9 +1383,14 @@ export default {
           }
         }
 
+        const approvalStatus = tx.approvalStatus || (tx.type === "expense" ? "pending" : "approved");
+        const approvedAmount = tx.approvedAmount !== undefined ? Number(tx.approvedAmount) : null;
+        const approvedBy = tx.approvedBy || null;
+        const approvedDate = tx.approvedDate || null;
+
         await env.DB.prepare(`
-          INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, is_non_cash, barter_property_type, barter_description, barter_agreed_value, attachment_name, attachment_data)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, is_non_cash, barter_property_type, barter_description, barter_agreed_value, attachment_name, attachment_data, approval_status, approved_amount, approved_by, approved_date)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           txId,
           tx.companyId || "c1",
@@ -1369,7 +1408,11 @@ export default {
           barterDesc,
           barterValue,
           tx.attachmentName || null,
-          attachmentUrl
+          attachmentUrl,
+          approvalStatus,
+          approvedAmount,
+          approvedBy,
+          approvedDate
         ).run();
 
         // Adjust local account balances in D1 if not non-cash

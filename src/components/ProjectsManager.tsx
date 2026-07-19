@@ -98,6 +98,13 @@ export default function ProjectsManager({
   const [downPayment, setDownPayment] = useState("");
   const [barterProperty, setBarterProperty] = useState("");
 
+  // Physical unit edit states
+  const [isEditingPhysicalProps, setIsEditingPhysicalProps] = useState(false);
+  const [editUnitNumber, setEditUnitNumber] = useState("");
+  const [editUnitFloor, setEditUnitFloor] = useState("");
+  const [editUnitArea, setEditUnitArea] = useState("");
+  const [editUnitPricePerMeter, setEditUnitPricePerMeter] = useState("");
+
   // Custom unit expense states
   const [unitExpTitle, setUnitExpTitle] = useState("");
   const [unitExpAmount, setUnitExpAmount] = useState("");
@@ -156,6 +163,12 @@ export default function ProjectsManager({
       setBuyerName(selectedUnit.buyerName || "");
       setDownPayment(String(selectedUnit.downPayment || ""));
       setBarterProperty(selectedUnit.barterProperty || "");
+      
+      setEditUnitNumber(selectedUnit.unitNumber);
+      setEditUnitFloor(selectedUnit.floor);
+      setEditUnitArea(String(selectedUnit.area || ""));
+      setEditUnitPricePerMeter(String(selectedUnit.pricePerMeter || ""));
+      setIsEditingPhysicalProps(false);
     }
   }, [selectedUnit]);
 
@@ -283,6 +296,21 @@ export default function ProjectsManager({
     setBarterProperty("");
   };
 
+  const handleSavePhysicalProps = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUnit) return;
+    onUpdateUnit(selectedUnit.id, {
+      unitNumber: editUnitNumber,
+      floor: editUnitFloor,
+      area: Number(editUnitArea || 0),
+      pricePerMeter: Number(editUnitPricePerMeter || 0),
+      totalPrice: Number(editUnitArea || 0) * Number(editUnitPricePerMeter || 0)
+    });
+    setIsEditingPhysicalProps(false);
+    setSelectedUnit(null); // Deselect to force refresh state in parent
+    alert("مشخصات فیزیکی واحد با موفقیت بروزرسانی شد.");
+  };
+
   const handleSaveUnitExpense = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedUnit || !unitExpTitle || !unitExpAmount) return;
@@ -380,12 +408,11 @@ export default function ProjectsManager({
             </div>
             <div className="space-y-1.5">
               <label className="text-slate-500 font-semibold">بودجه ساخت برآوردی (ریال)</label>
-              <input 
-                type="number" 
-                placeholder="مثال: ۴۸۰۰۰۰۰۰۰۰۰"
+              <FormattedAmountInput 
+                placeholder="مثال: ۴۸,۰۰۰,۰۰۰,۰۰۰"
                 value={projBudget}
-                onChange={e => setProjBudget(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-teal-500"
+                onChange={setProjBudget}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-teal-500 font-mono text-center"
               />
             </div>
             <div className="space-y-1.5">
@@ -506,11 +533,11 @@ export default function ProjectsManager({
             </div>
             <div className="space-y-1.5">
               <label className="text-slate-600 font-semibold">بودجه ساخت برآوردی (ریال)</label>
-              <input 
-                type="number" 
+              <FormattedAmountInput 
+                placeholder="مثال: ۴۸,۰۰۰,۰۰۰,۰۰۰"
                 value={editBudget}
-                onChange={e => setEditBudget(e.target.value)}
-                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-amber-500 text-slate-900 font-mono"
+                onChange={setEditBudget}
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-amber-500 text-slate-900 font-mono text-center"
               />
             </div>
             <div className="space-y-1.5">
@@ -1073,6 +1100,20 @@ export default function ProjectsManager({
                   </div>
                   
                   <div className="flex items-center gap-2">
+                    {/* Edit Core Physical Properties Button */}
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingPhysicalProps(!isEditingPhysicalProps)}
+                      className={`px-2.5 py-1.5 rounded-xl text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer border ${
+                        isEditingPhysicalProps
+                          ? "bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-700 shadow-sm"
+                          : "bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200"
+                      }`}
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      {isEditingPhysicalProps ? "لغو ویرایش مشخصات" : "ویرایش مشخصات فیزیکی"}
+                    </button>
+
                     {/* Delete Unit Button with 2-step confirmation */}
                     {onDeleteUnit && (
                       <div className="flex items-center gap-1.5">
@@ -1118,77 +1159,143 @@ export default function ProjectsManager({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
-                  {/* Left: Pre-sales & Barter registration */}
-                  <div className="space-y-4 border-l border-slate-100 pl-6">
-                    <h5 className="font-extrabold text-slate-700 flex items-center gap-1">
-                      <Coins className="w-4 h-4 text-teal-500" />
-                      وضعیت واگذاری و پیش‌فروش واحد
-                    </h5>
+                  {/* Left Column: Physical Properties Editing OR Pre-sales & Barter registration */}
+                  {isEditingPhysicalProps ? (
+                    <div className="space-y-4 border-l border-slate-100 pl-6">
+                      <h5 className="font-extrabold text-indigo-700 flex items-center gap-1">
+                        <Edit3 className="w-4 h-4 text-indigo-500" />
+                        ویرایش مشخصات فیزیکی واحد مسکونی
+                      </h5>
 
-                    <form onSubmit={handleSaveSale} className="space-y-3 font-medium text-slate-600">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-500 block">نوع واگذاری</label>
-                        <select 
-                          value={saleStatus}
-                          onChange={e => setSaleStatus(e.target.value as any)}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold text-slate-800"
-                        >
-                          <option value="available">موجود و آماده واگذاری</option>
-                          <option value="pre_sold">پیش‌فروش شده</option>
-                          <option value="sold">فروخته شده قطعی</option>
-                          <option value="bartered">واگذار شده بابت تهاتر با مصالح/خدمات</option>
-                        </select>
-                      </div>
-
-                      {saleStatus !== "available" && saleStatus !== "any" && (
+                      <form onSubmit={handleSavePhysicalProps} className="space-y-3 font-medium text-slate-600">
                         <div className="space-y-1">
-                          <label className="text-[10px] text-slate-500 block">نام خریدار / پیمانکار طرف تهاتر <span className="text-rose-500">*</span></label>
+                          <label className="text-[10px] text-slate-500 block">شماره واحد</label>
                           <input 
                             type="text" 
-                            placeholder="مثال: آقای مهندس حسینی"
-                            value={buyerName}
-                            onChange={e => setBuyerName(e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900"
+                            placeholder="مثال: ۱۰۱"
+                            value={editUnitNumber}
+                            onChange={e => setEditUnitNumber(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900 font-bold"
                             required
                           />
                         </div>
-                      )}
 
-                      {(saleStatus === "pre_sold" || saleStatus === "sold") && (
                         <div className="space-y-1">
-                          <label className="text-[10px] text-slate-500 block">مبلغ پیش‌دریافت نقدی (ریال) <span className="text-rose-500">*</span></label>
+                          <label className="text-[10px] text-slate-500 block">طبقه</label>
+                          <input 
+                            type="text" 
+                            placeholder="مثال: ۱"
+                            value={editUnitFloor}
+                            onChange={e => setEditUnitFloor(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900 font-bold"
+                            required
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-500 block">متراژ واحد (مترمربع)</label>
                           <input 
                             type="number" 
-                            placeholder="کل وجه نقد دریافتی"
-                            value={downPayment}
-                            onChange={e => setDownPayment(e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono text-slate-900"
+                            placeholder="مثال: ۹۵"
+                            value={editUnitArea}
+                            onChange={e => setEditUnitArea(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900 font-mono text-center font-bold"
                             required
                           />
                         </div>
-                      )}
 
-                      {saleStatus === "bartered" && (
                         <div className="space-y-1">
-                          <label className="text-[10px] text-slate-500 block">جزئیات اقلام، مصالح یا آهن‌آلات تهاتر شده <span className="text-rose-500">*</span></label>
-                          <textarea 
-                            placeholder="مثال: تهاتر با ۷۰ تن اسکلت فلزی پیچ و مهره ساختمان"
-                            value={barterProperty}
-                            onChange={e => setBarterProperty(e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none h-16 resize-none text-slate-900"
-                            required
+                          <label className="text-[10px] text-slate-500 block">قیمت پایه هر متر مربع (ریال)</label>
+                          <FormattedAmountInput 
+                            value={editUnitPricePerMeter}
+                            onChange={setEditUnitPricePerMeter}
+                            placeholder="مثال: ۳۵,۰۰۰,۰۰۰"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900 font-mono text-center font-bold"
                           />
                         </div>
-                      )}
 
-                      <button 
-                        type="submit"
-                        className="w-full py-2.5 bg-slate-950 text-white rounded-xl font-bold hover:bg-slate-900 transition-colors cursor-pointer text-xs"
-                      >
-                        ثبت و ذخیره وضعیت واگذاری واحد
-                      </button>
-                    </form>
-                  </div>
+                        <div className="pt-2">
+                          <button 
+                            type="submit"
+                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-colors cursor-pointer text-xs"
+                          >
+                            ذخیره تغییرات فیزیکی واحد
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  ) : (
+                    <div className="space-y-4 border-l border-slate-100 pl-6">
+                      <h5 className="font-extrabold text-slate-700 flex items-center gap-1">
+                        <Coins className="w-4 h-4 text-teal-500" />
+                        وضعیت واگذاری و پیش‌فروش واحد
+                      </h5>
+
+                      <form onSubmit={handleSaveSale} className="space-y-3 font-medium text-slate-600">
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-500 block">نوع واگذاری</label>
+                          <select 
+                            value={saleStatus}
+                            onChange={e => setSaleStatus(e.target.value as any)}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold text-slate-800"
+                          >
+                            <option value="available">موجود و آماده واگذاری</option>
+                            <option value="pre_sold">پیش‌فروش شده</option>
+                            <option value="sold">فروخته شده قطعی</option>
+                            <option value="bartered">واگذار شده بابت تهاتر با مصالح/خدمات</option>
+                          </select>
+                        </div>
+
+                        {saleStatus !== "available" && saleStatus !== "any" && (
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 block">نام خریدار / پیمانکار طرف تهاتر <span className="text-rose-500">*</span></label>
+                            <input 
+                              type="text" 
+                              placeholder="مثال: آقای مهندس حسینی"
+                              value={buyerName}
+                              onChange={e => setBuyerName(e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none text-slate-900"
+                              required
+                            />
+                          </div>
+                        )}
+
+                        {(saleStatus === "pre_sold" || saleStatus === "sold") && (
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 block">مبلغ پیش‌دریافت نقدی (ریال) <span className="text-rose-500">*</span></label>
+                            <input 
+                              type="number" 
+                              placeholder="کل وجه نقد دریافتی"
+                              value={downPayment}
+                              onChange={e => setDownPayment(e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono text-slate-900"
+                              required
+                            />
+                          </div>
+                        )}
+
+                        {saleStatus === "bartered" && (
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 block">جزئیات اقلام، مصالح یا آهن‌آلات تهاتر شده <span className="text-rose-500">*</span></label>
+                            <textarea 
+                              placeholder="مثال: تهاتر با ۷۰ تن اسکلت فلزی پیچ و مهره ساختمان"
+                              value={barterProperty}
+                              onChange={e => setBarterProperty(e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none h-16 resize-none text-slate-900"
+                              required
+                            />
+                          </div>
+                        )}
+
+                        <button 
+                          type="submit"
+                          className="w-full py-2.5 bg-slate-950 text-white rounded-xl font-bold hover:bg-slate-900 transition-colors cursor-pointer text-xs"
+                        >
+                          ثبت و ذخیره وضعیت واگذاری واحد
+                        </button>
+                      </form>
+                    </div>
+                  )}
 
                   {/* Right: Specific Unit Expenses */}
                   <div className="space-y-4">

@@ -207,6 +207,10 @@ interface Transaction {
   payments?: TransactionPayment[];
   preSaleId?: string;
   isDeleted?: boolean;
+  approvalStatus?: "pending" | "approved" | "rejected";
+  approvedAmount?: number;
+  approvedBy?: string;
+  approvedDate?: string;
 }
 
 interface CheckItem {
@@ -1026,7 +1030,11 @@ app.post("/api/transactions", (req, res) => {
     attachmentName: req.body.attachmentName,
     attachmentData: req.body.attachmentData, // base64 document attachment
     paymentStatus: req.body.paymentStatus || (req.body.type === "expense" ? "paid" : "paid"),
-    payments: req.body.payments || []
+    payments: req.body.payments || [],
+    approvalStatus: req.body.approvalStatus || (req.body.type === "expense" ? "pending" : "approved"),
+    approvedAmount: req.body.approvedAmount !== undefined ? Number(req.body.approvedAmount) : undefined,
+    approvedBy: req.body.approvedBy,
+    approvedDate: req.body.approvedDate
   };
 
   // If status is paid and payments is empty, automatically create a single full payment
@@ -1117,6 +1125,40 @@ app.post("/api/transactions", (req, res) => {
   
   writeDb(db);
   res.json({ status: "success", transaction: newTransaction });
+});
+
+// 6a2. Approve/Reject Transaction (For Senior Manager Workflow)
+app.post("/api/transactions/approve", (req, res) => {
+  try {
+    const db = readDb();
+    const { id, approvalStatus, approvedAmount, approvedBy, approvedDate } = req.body;
+    
+    if (!id) {
+      return res.status(400).json({ error: "شناسه تراکنش الزامی است" });
+    }
+    
+    const txIdx = db.transactions.findIndex(t => t.id === id);
+    if (txIdx < 0) {
+      return res.status(404).json({ error: "تراکنش یافت نشد" });
+    }
+    
+    const tx = db.transactions[txIdx];
+    tx.approvalStatus = approvalStatus || "approved";
+    if (approvedAmount !== undefined) {
+      tx.approvedAmount = Number(approvedAmount);
+    }
+    if (approvedBy !== undefined) {
+      tx.approvedBy = approvedBy;
+    }
+    if (approvedDate !== undefined) {
+      tx.approvedDate = approvedDate;
+    }
+    
+    writeDb(db);
+    res.json({ status: "success", transaction: tx });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در ثبت تاییدیه تراکنش: " + err.message });
+  }
 });
 
 // 6b. Add installment / payment to existing transaction
@@ -1841,7 +1883,8 @@ app.post("/api/users", (req, res) => {
     role: user.role || "supervisor",
     roleName: user.roleName || "ناظر پروژه",
     username: user.username ? user.username.trim() : "",
-    password: user.password ? user.password.trim() : ""
+    password: user.password ? user.password.trim() : "",
+    permissions: Array.isArray(user.permissions) ? user.permissions : []
   };
 
   if (!db.users) db.users = [];

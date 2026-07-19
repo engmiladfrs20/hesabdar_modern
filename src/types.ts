@@ -29,6 +29,7 @@ export interface User {
   roleName: string;
   username?: string;
   password?: string;
+  permissions?: string[];
 }
 
 export interface Account {
@@ -200,6 +201,10 @@ export interface Transaction {
   payments?: TransactionPayment[];
   preSaleId?: string;
   isDeleted?: boolean;
+  approvalStatus?: "pending" | "approved" | "rejected";
+  approvedAmount?: number;
+  approvedBy?: string;
+  approvedDate?: string;
 }
 
 export interface CheckItem {
