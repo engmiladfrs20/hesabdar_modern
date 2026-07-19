@@ -1,0 +1,37 @@
+{
+  "name": "construction-accounting-offline",
+  "version": "1.0.0",
+  "description": "سامانه حسابداری سازه - نسخه آفلاین دسکتاپ ویندوز با قابلیت همگام‌سازی ابری",
+  "main": "electron-main.cjs",
+  "author": "Milad Farrokhi",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "@google/genai": "^2.4.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.milad.construction.accounting",
+    "productName": "ConstructionAccountingOffline",
+    "win": {
+      "target": "nsis"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron-main.cjs",
+      "package.json",
+      "db.json"
+    ]
+  }
+}
