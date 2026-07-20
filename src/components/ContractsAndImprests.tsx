@@ -31,7 +31,8 @@ import {
   Paperclip,
   Search,
   Coins,
-  ShieldCheck
+  ShieldCheck,
+  Building
 } from "lucide-react";
 import { DatabaseSchema, Project, Account, UnitItem, Contact as DBContact, ImprestExpense } from "../types";
 import SearchableCombobox, { ComboboxOption } from "./SearchableCombobox";
@@ -302,6 +303,54 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
   const [presalePayDate, setPresalePayDate] = useState(() => getTodayShamsiString());
   const [presalePayRef, setPresalePayRef] = useState("");
   const [presalePayDesc, setPresalePayDesc] = useState("");
+
+  // States for exact area deed settlement
+  const [exactAreaInput, setExactAreaInput] = useState("");
+  const [secondaryPriceInput, setSecondaryPriceInput] = useState("");
+  const [hasExactAreaChecked, setHasExactAreaChecked] = useState(false);
+
+  React.useEffect(() => {
+    if (selectedPreSaleId) {
+      const ps = (db.preSales || []).find(p => p.id === selectedPreSaleId);
+      if (ps) {
+        setExactAreaInput(ps.exactArea !== undefined ? ps.exactArea.toString() : ps.contractArea.toString());
+        setSecondaryPriceInput(ps.secondaryPricePerMeter !== undefined ? ps.secondaryPricePerMeter.toString() : ps.pricePerMeter.toString());
+        setHasExactAreaChecked(!!ps.hasExactArea);
+      }
+    }
+  }, [selectedPreSaleId, db.preSales]);
+
+  const handleUpdateExactArea = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPreSaleId) return;
+    setIsSubmitting(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    try {
+      const response = await fetch(getApiUrl("/api/presales/update-area"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: selectedPreSaleId,
+          exactArea: Number(exactAreaInput),
+          secondaryPricePerMeter: Number(secondaryPriceInput),
+          hasExactArea: hasExactAreaChecked
+        })
+      });
+      const data = await response.json();
+      if (data.status === "success") {
+        setSuccessMsg("متراژ دقیق سند و مابه‌التفاوت قرارداد با موفقیت اعمال و اقساط بازمحاسبه شدند.");
+        await onRefresh();
+      } else {
+        setErrorMsg(data.error || "خطا در بروزرسانی متراژ دقیق");
+      }
+    } catch (err: any) {
+      setErrorMsg("خطا: " + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   // Helper formatting functions
   const formatRial = (num: number) => {
@@ -2101,7 +2150,17 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
                               </span>
                             ) : (
                               `واحد ${unit ? unit.unitNumber : ""}`
-                            )} ({ps.contractArea} مترمربع)
+                            )} 
+                            <div className="mt-1 flex flex-wrap gap-1 items-center">
+                              <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md">
+                                اولیه: {ps.contractArea} مترمربع
+                              </span>
+                              {ps.hasExactArea && ps.exactArea !== undefined && (
+                                <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md font-bold">
+                                  ⚖️ سند رسمی: {ps.exactArea} مترمربع
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="p-3 text-center font-mono text-slate-500">{ps.contractDate}</td>
                           <td className="p-3 text-left font-extrabold font-mono text-indigo-700">{formatRial(ps.totalPrice)}</td>
@@ -2168,6 +2227,125 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
                     </p>
                   </div>
                 </div>
+
+                {/* Final Deed Area Adjustment Form */}
+                {(() => {
+                  const currentPreSale = presalesList.find(ps => ps.id === selectedPreSaleId);
+                  if (!currentPreSale) return null;
+                  return (
+                    <div className="mb-6 p-5 bg-gradient-to-br from-amber-50 to-orange-50/50 border border-amber-200/80 rounded-2xl space-y-4">
+                      <div className="flex items-center gap-2 border-b border-amber-200/50 pb-2">
+                        <Building className="w-5 h-5 text-amber-700" />
+                        <div>
+                          <h4 className="text-xs font-extrabold text-amber-950">تعدیل و تصفیه نهایی متراژ واحد (بروزرسانی بعد از صدور سند رسمی)</h4>
+                          <p className="text-[10px] text-amber-700 font-medium">پس از مشخص شدن متراژ دقیق واحد در اداره ثبت و سند، مابه‌التفاوت متراژ را ثبت و تسویه کنید.</p>
+                        </div>
+                      </div>
+
+                      <form onSubmit={handleUpdateExactArea} className="space-y-4">
+                        <div className="flex items-center gap-3 bg-white/75 p-3 rounded-xl border border-amber-100">
+                          <input
+                            type="checkbox"
+                            id="hasExactAreaChecked"
+                            checked={hasExactAreaChecked}
+                            onChange={e => setHasExactAreaChecked(e.target.checked)}
+                            className="w-4 h-4 text-amber-600 border-amber-300 rounded focus:ring-amber-500 cursor-pointer"
+                          />
+                          <label htmlFor="hasExactAreaChecked" className="text-xs font-bold text-amber-900 cursor-pointer select-none">
+                            فعال‌سازی ثبت متراژ دقیق سند رسمی برای این قرارداد
+                          </label>
+                        </div>
+
+                        {hasExactAreaChecked && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fadeIn">
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-slate-500 font-bold block">متراژ دقیق سند رسمی (مترمربع)</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                required
+                                placeholder="مثال: ۱۰۵.۴"
+                                value={exactAreaInput}
+                                onChange={e => setExactAreaInput(e.target.value)}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500"
+                              />
+                              <span className="text-[9px] text-slate-400 font-medium block">متراژ تقریبی اولیه قرارداد: {currentPreSale.contractArea} مترمربع</span>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-slate-500 font-bold block">قیمت توافقی هر متر مازاد/کسری (ریال)</label>
+                              <FormattedAmountInput
+                                required
+                                placeholder="قیمت هر متر مازاد"
+                                value={secondaryPriceInput}
+                                onChange={val => setSecondaryPriceInput(val)}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500"
+                              />
+                              <span className="text-[9px] text-slate-400 font-medium block">قیمت اولیه هر متر قرارداد: {formatRial(currentPreSale.pricePerMeter)}</span>
+                            </div>
+
+                            {/* Live calculations */}
+                            <div className="md:col-span-2 bg-amber-100/40 border border-amber-200/50 p-3 rounded-xl space-y-2">
+                              <div className="flex justify-between items-center text-xs font-semibold text-amber-900">
+                                <span>تفاضل متراژ (دقیق - اولیه):</span>
+                                <span className="font-mono font-bold">
+                                  {(() => {
+                                    const diff = Number(exactAreaInput || 0) - currentPreSale.contractArea;
+                                    if (diff > 0) {
+                                      return <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-extrabold">+{diff.toFixed(2)} متر مربع (مازاد متراژ)</span>;
+                                    } else if (diff < 0) {
+                                      return <span className="text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md font-extrabold">{diff.toFixed(2)} متر مربع (کسری متراژ)</span>;
+                                    } else {
+                                      return <span className="text-slate-500 font-extrabold">بدون تغییر</span>;
+                                    }
+                                  })()}
+                                </span>
+                              </div>
+
+                              <div className="flex justify-between items-center text-xs font-semibold text-amber-900">
+                                <span>مبلغ تعدیل نهایی قرارداد:</span>
+                                <span className="font-mono font-extrabold text-amber-950">
+                                  {(() => {
+                                    const diff = Number(exactAreaInput || 0) - currentPreSale.contractArea;
+                                    const adjPrice = diff * Number(secondaryPriceInput || 0);
+                                    return (
+                                      <span className={adjPrice > 0 ? "text-emerald-700 font-extrabold" : adjPrice < 0 ? "text-rose-700 font-extrabold" : "text-slate-500"}>
+                                        {adjPrice > 0 ? "اضافه دریافت: +" : adjPrice < 0 ? "بستانکاری خریدار: " : ""}
+                                        {formatRial(Math.round(adjPrice))}
+                                      </span>
+                                    );
+                                  })()}
+                                </span>
+                              </div>
+
+                              <div className="flex justify-between items-center text-xs font-extrabold text-indigo-900 border-t border-amber-200/50 pt-2 mt-1">
+                                <span>مبلغ کل اصلاح‌شده قرارداد پیش‌فروش:</span>
+                                <span className="font-mono text-sm">
+                                  {(() => {
+                                    const diff = Number(exactAreaInput || 0) - currentPreSale.contractArea;
+                                    const adjPrice = diff * Number(secondaryPriceInput || 0);
+                                    const finalPrice = (currentPreSale.contractArea * currentPreSale.pricePerMeter) + adjPrice;
+                                    return formatRial(Math.round(finalPrice));
+                                  })()}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            disabled={isSubmitting}
+                            className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                          >
+                            {isSubmitting ? "در حال ثبت..." : "بروزرسانی متراژ دقیق و تعدیل قرارداد"}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  );
+                })()}
 
                 {/* Form to add a custom installment */}
                 <form onSubmit={handleAddInstallment} className="mb-6 p-4 bg-slate-50 border border-slate-150 rounded-2xl space-y-3">

@@ -309,6 +309,9 @@ interface PreSale {
   contractDate: string;
   status: "active" | "completed" | "canceled";
   isScoringPending?: boolean;
+  exactArea?: number;
+  secondaryPricePerMeter?: number;
+  hasExactArea?: boolean;
 }
 
 interface PreSaleInstallment {
@@ -2256,6 +2259,69 @@ app.post("/api/presales/delete", (req, res) => {
     }
   } catch (err: any) {
     res.status(500).json({ error: "خطا در حذف قرارداد: " + err.message });
+  }
+});
+
+// 9e-3. Update Pre-Sale Exact Area & Secondary Price (Deed settlement)
+app.post("/api/presales/update-area", (req, res) => {
+  try {
+    const db = readDb();
+    const { id, exactArea, secondaryPricePerMeter, hasExactArea } = req.body;
+
+    const idx = db.preSales.findIndex(ps => ps.id === id);
+    if (idx < 0) {
+      return res.status(404).json({ error: "قرارداد پیش‌فروش یافت نشد" });
+    }
+
+    const preSale = db.preSales[idx];
+    const prevTotalPrice = preSale.totalPrice;
+
+    preSale.hasExactArea = !!hasExactArea;
+    if (hasExactArea) {
+      preSale.exactArea = Number(exactArea);
+      preSale.secondaryPricePerMeter = Number(secondaryPricePerMeter);
+      const diffArea = preSale.exactArea - preSale.contractArea;
+      const adjustment = diffArea * preSale.secondaryPricePerMeter;
+      preSale.totalPrice = Math.round((preSale.contractArea * preSale.pricePerMeter) + adjustment);
+    } else {
+      preSale.exactArea = undefined;
+      preSale.secondaryPricePerMeter = undefined;
+      preSale.totalPrice = Math.round(preSale.contractArea * preSale.pricePerMeter);
+    }
+
+    const diffAmount = preSale.totalPrice - prevTotalPrice;
+
+    // Adjust installments
+    const installments = db.preSaleInstallments.filter(i => i.preSaleId === id);
+    let targetInst = installments.find(i => 
+      i.installmentName.includes("سند") || 
+      i.installmentName.includes("دفترخانه") || 
+      i.installmentName.includes("نهایی")
+    );
+
+    if (!targetInst && installments.length > 0) {
+      // Find the last installment chronologically
+      installments.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+      targetInst = installments[installments.length - 1];
+    }
+
+    if (targetInst) {
+      targetInst.amount = Math.max(0, targetInst.amount + diffAmount);
+    }
+
+    // Adjust buyer balance
+    const buyer = db.contacts.find(c => c.id === preSale.contactId);
+    if (buyer) {
+      buyer.balance = Math.max(0, (buyer.balance || 0) + diffAmount);
+    }
+
+    // Recalculate
+    recalculatePreSaleInstallments(db, id);
+
+    writeDb(db);
+    res.json({ status: "success", preSale, installments });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در بروزرسانی متراژ دقیق قرارداد: " + err.message });
   }
 });
 

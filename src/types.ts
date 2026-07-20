@@ -107,6 +107,9 @@ export interface PreSale {
   contractDate: string;
   status: "active" | "completed" | "canceled";
   isScoringPending?: boolean;
+  exactArea?: number; // متراژ دقیق سند
+  secondaryPricePerMeter?: number; // قیمت هر متر مربع برای مازاد یا کسری متراژ
+  hasExactArea?: boolean; // نشان‌دهنده ثبت متراژ دقیق
 }
 
 export interface PreSaleInstallment {
