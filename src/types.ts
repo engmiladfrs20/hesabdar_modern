@@ -205,6 +205,7 @@ export interface Transaction {
   approvedAmount?: number;
   approvedBy?: string;
   approvedDate?: string;
+  createdBy?: string;
 }
 
 export interface CheckItem {

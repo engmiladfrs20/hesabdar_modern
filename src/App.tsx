@@ -36,6 +36,21 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
+export const ALL_PERMISSIONS = [
+  { id: "view_dashboard", name: "مشاهده میز کار (داشبورد)" },
+  { id: "manage_projects", name: "مدیریت پروژه‌ها و واحدها" },
+  { id: "manage_transactions", name: "مدیریت دریافت و پرداخت" },
+  { id: "manage_warehouse", name: "مدیریت انبارداری و کالا" },
+  { id: "manage_checks", name: "مدیریت چک‌های صیادی" },
+  { id: "manage_contracts", name: "مدیریت قراردادها و تنخواه" },
+  { id: "manage_payroll", name: "مدیریت حقوق و دستمزد" },
+  { id: "view_reports", name: "مشاهده گزارش‌ها و دفاتر مالی" },
+  { id: "manage_archive", name: "مدیریت بایگانی اسناد" },
+  { id: "view_tax", name: "مشاهده مشاور مالیاتی هوشمند" },
+  { id: "manage_dev_kit", name: "مدیریت کیت توسعه کلودفلر" },
+  { id: "manage_users", name: "مدیریت کاربران و دسترسی‌ها" },
+];
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [db, setDb] = useState<DatabaseSchema | null>(null);
@@ -76,6 +91,7 @@ export default function App() {
   const [userUsernameInput, setUserUsernameInput] = useState("");
   const [userPasswordInput, setUserPasswordInput] = useState("");
   const [userErrorText, setUserErrorText] = useState<string | null>(null);
+  const [selectedPermissions, setSelectedPermissions] = useState<string[]>([]);
 
   const getApiUrl = (endpoint: string) => {
     if (cfEnabled && cfUrl) {
@@ -614,7 +630,8 @@ export default function App() {
       role: userRoleInput,
       roleName,
       username,
-      password
+      password,
+      permissions: selectedPermissions
     };
 
     if (editingUserId) {
@@ -629,6 +646,7 @@ export default function App() {
       setUserRoleNameInput("");
       setUserUsernameInput("");
       setUserPasswordInput("");
+      setSelectedPermissions([]);
     }
   };
 
@@ -639,6 +657,36 @@ export default function App() {
     setUserRoleNameInput(u.roleName);
     setUserUsernameInput(u.username || "");
     setUserPasswordInput(u.password || "");
+    setSelectedPermissions(u.permissions || []);
+  };
+
+  const handleApproveTransaction = async (id: string, approvalStatus: "approved" | "rejected", approvedAmount?: number) => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch(getApiUrl("/api/transactions/approve"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id,
+          approvalStatus,
+          approvedAmount,
+          approvedBy: activeUser?.name || "مدیر ارشد",
+          approvedDate: new Date().toLocaleDateString("fa-IR")
+        })
+      });
+      const data = await response.json();
+      if (data.status === "success") {
+        setSyncSuccess(true);
+        setTimeout(() => setSyncSuccess(false), 2000);
+        await fetchDb();
+      } else {
+        alert(data.error || "خطا در ثبت تأییدیه");
+      }
+    } catch (err) {
+      console.error("Error approving transaction:", err);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleBatchGenerateUnits = async (projectId: string, unitsList: any[]) => {
@@ -1178,6 +1226,14 @@ export default function App() {
   const activeCompany = db.companies.find(c => c.id === activeCompanyId);
   const activeUser = db.users.find(u => u.id === activeUserId);
 
+  const hasPermission = (permissionId: string) => {
+    if (!activeUser) return false;
+    if (activeUser.id === "u1" || activeUser.role === "manager" || activeUser.username?.toLowerCase() === "admin") {
+      return true;
+    }
+    return activeUser.permissions?.includes(permissionId) || false;
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800" dir="rtl">
       
@@ -1262,34 +1318,42 @@ export default function App() {
           </div>
 
           {/* Multi-User Switcher ("چند کاربره") */}
-          <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-150 shadow-2xs">
-            <Users className="w-3.5 h-3.5 text-slate-400" />
-            <select 
-              value={activeUserId}
-              onChange={(e) => setActiveUserId(e.target.value)}
-              className="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer"
-            >
-              {(db?.users || []).map(u => (
-                <option key={u.id} value={u.id}>{u.name} ({u.roleName})</option>
-              ))}
-            </select>
-            <button
-              onClick={() => {
-                setEditingUserId(null);
-                setUserNameInput("");
-                setUserRoleInput("supervisor");
-                setUserRoleNameInput("");
-                setUserUsernameInput("");
-                setUserPasswordInput("");
-                setUserErrorText(null);
-                setShowUserModal(true);
-              }}
-              title="تعریف و مدیریت کاربران سیستم"
-              className="p-1 text-slate-450 hover:text-indigo-600 rounded transition-colors cursor-pointer mr-1 border-r border-slate-200 pr-1 flex items-center justify-center"
-            >
-              <Plus className="w-3 h-3 shrink-0" />
-            </button>
-          </div>
+          {hasPermission("manage_users") ? (
+            <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-150 shadow-2xs">
+              <Users className="w-3.5 h-3.5 text-slate-400" />
+              <select 
+                value={activeUserId}
+                onChange={(e) => setActiveUserId(e.target.value)}
+                className="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer"
+              >
+                {(db?.users || []).map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.roleName})</option>
+                ))}
+              </select>
+              <button
+                onClick={() => {
+                  setEditingUserId(null);
+                  setUserNameInput("");
+                  setUserRoleInput("supervisor");
+                  setUserRoleNameInput("");
+                  setUserUsernameInput("");
+                  setUserPasswordInput("");
+                  setUserErrorText(null);
+                  setSelectedPermissions([]);
+                  setShowUserModal(true);
+                }}
+                title="تعریف و مدیریت کاربران سیستم"
+                className="p-1 text-slate-450 hover:text-indigo-600 rounded transition-colors cursor-pointer mr-1 border-r border-slate-200 pr-1 flex items-center justify-center"
+              >
+                <Plus className="w-3 h-3 shrink-0" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-150 shadow-2xs">
+              <Users className="w-3.5 h-3.5 text-slate-400" />
+              <span className="text-slate-850 font-extrabold text-xs">{activeUser?.name} ({activeUser?.roleName})</span>
+            </div>
+          )}
 
           {/* Reset Sandbox Trigger */}
           <button 
@@ -1321,95 +1385,113 @@ export default function App() {
               <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-2 px-2">دفتر اصلی حسابرسی</span>
               
               <nav className="space-y-1">
-                <button 
-                  onClick={() => setActiveTab("dashboard")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "dashboard" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <LayoutDashboard className="w-4 h-4 shrink-0" />
-                  میز کار (داشبورد)
-                </button>
+                {hasPermission("view_dashboard") && (
+                  <button 
+                    onClick={() => setActiveTab("dashboard")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "dashboard" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <LayoutDashboard className="w-4 h-4 shrink-0" />
+                    میز کار (داشبورد)
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("projects")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "projects" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Building className="w-4 h-4 shrink-0" />
-                  پروژه‌ها و واحدها
-                </button>
+                {hasPermission("manage_projects") && (
+                  <button 
+                    onClick={() => setActiveTab("projects")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "projects" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Building className="w-4 h-4 shrink-0" />
+                    پروژه‌ها و واحدها
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("transactions")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "transactions" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Receipt className="w-4 h-4 shrink-0" />
-                  دریافت و پرداخت
-                </button>
+                {hasPermission("manage_transactions") && (
+                  <button 
+                    onClick={() => setActiveTab("transactions")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "transactions" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Receipt className="w-4 h-4 shrink-0" />
+                    دریافت و پرداخت
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("warehouse")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "warehouse" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Package className="w-4 h-4 shrink-0" />
-                  انبارداری و کالا
-                </button>
+                {hasPermission("manage_warehouse") && (
+                  <button 
+                    onClick={() => setActiveTab("warehouse")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "warehouse" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Package className="w-4 h-4 shrink-0" />
+                    انبارداری و کالا
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("checks")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "checks" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Clock className="w-4 h-4 shrink-0" />
-                  چک‌های صیادی
-                </button>
+                {hasPermission("manage_checks") && (
+                  <button 
+                    onClick={() => setActiveTab("checks")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "checks" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Clock className="w-4 h-4 shrink-0" />
+                    چک‌های صیادی
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("contracts_imprests")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "contracts_imprests" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Users className="w-4 h-4 shrink-0" />
-                  قراردادها و تنخواه
-                </button>
+                {hasPermission("manage_contracts") && (
+                  <button 
+                    onClick={() => setActiveTab("contracts_imprests")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "contracts_imprests" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Users className="w-4 h-4 shrink-0" />
+                    قراردادها و تنخواه
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("payrolls_timesheets")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "payrolls_timesheets" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Briefcase className="w-4 h-4 shrink-0" />
-                  حقوق و دستمزد
-                </button>
+                {hasPermission("manage_payroll") && (
+                  <button 
+                    onClick={() => setActiveTab("payrolls_timesheets")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "payrolls_timesheets" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Briefcase className="w-4 h-4 shrink-0" />
+                    حقوق و دستمزد
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("accounting_reports")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "accounting_reports" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <BookOpen className="w-4 h-4 text-emerald-500 shrink-0" />
-                  گزارش‌ها و دفاتر مالی
-                </button>
+                {hasPermission("view_reports") && (
+                  <button 
+                    onClick={() => setActiveTab("accounting_reports")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "accounting_reports" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <BookOpen className="w-4 h-4 text-emerald-500 shrink-0" />
+                    گزارش‌ها و دفاتر مالی
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("document_archive")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "document_archive" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <FolderOpen className="w-4 h-4 text-indigo-500 shrink-0" />
-                  بایگانی الکترونیک اسناد
-                </button>
+                {hasPermission("manage_archive") && (
+                  <button 
+                    onClick={() => setActiveTab("document_archive")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "document_archive" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <FolderOpen className="w-4 h-4 text-indigo-500 shrink-0" />
+                    بایگانی الکترونیک اسناد
+                  </button>
+                )}
               </nav>
             </div>
 
@@ -1417,25 +1499,29 @@ export default function App() {
               <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mb-2 px-2">ابزارهای پیشرفته</span>
               
               <nav className="space-y-1">
-                <button 
-                  onClick={() => setActiveTab("tax")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "tax" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
-                  مشاور مالیاتی هوشمند
-                </button>
+                {hasPermission("view_tax") && (
+                  <button 
+                    onClick={() => setActiveTab("tax")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "tax" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
+                    مشاور مالیاتی هوشمند
+                  </button>
+                )}
 
-                <button 
-                  onClick={() => setActiveTab("dev_kit")}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                    activeTab === "dev_kit" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                  }`}
-                >
-                  <Cloud className="w-4 h-4 text-sky-500 shrink-0" />
-                  کیت کلودفلر و ویندوز
-                </button>
+                {hasPermission("manage_dev_kit") && (
+                  <button 
+                    onClick={() => setActiveTab("dev_kit")}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === "dev_kit" ? "bg-slate-900 text-white shadow-md font-bold" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                  >
+                    <Cloud className="w-4 h-4 text-sky-500 shrink-0" />
+                    کیت کلودفلر و ویندوز
+                  </button>
+                )}
               </nav>
             </div>
           </div>
@@ -1502,6 +1588,7 @@ export default function App() {
                   accounts={db.accounts}
                   projects={filteredProjects}
                   contacts={db.contacts}
+                  activeUser={activeUser}
                   onAddTransaction={handleAddTransaction}
                   onAddAccount={handleAddAccount}
                   onAddContact={handleAddContact}
@@ -1509,6 +1596,7 @@ export default function App() {
                   onPayTransaction={handlePayTransaction}
                   onDeleteTransaction={handleDeleteTransaction}
                   onDeleteAccount={handleDeleteAccount}
+                  onApproveTransaction={handleApproveTransaction}
                 />
               )}
               {activeTab === "warehouse" && (
@@ -1851,6 +1939,33 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Granular Permissions Checkboxes */}
+                <div className="space-y-2 pt-3 border-t border-slate-150">
+                  <span className="text-[10px] text-slate-500 font-bold block mr-1">سطوح دسترسی و مجوزها (با جزئیات):</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-50/50 p-3 rounded-2xl border border-slate-200/60 max-h-48 overflow-y-auto">
+                    {ALL_PERMISSIONS.map(p => {
+                      const isChecked = selectedPermissions.includes(p.id);
+                      return (
+                        <label key={p.id} className="flex items-center gap-2.5 p-1.5 hover:bg-slate-100/60 rounded-lg cursor-pointer transition-colors text-[10px] font-bold text-slate-700">
+                          <input 
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedPermissions([...selectedPermissions, p.id]);
+                              } else {
+                                setSelectedPermissions(selectedPermissions.filter(id => id !== p.id));
+                              }
+                            }}
+                            className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <span>{p.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="flex gap-2 pt-2 justify-end">
                   {editingUserId && (
                     <button 
@@ -1862,6 +1977,7 @@ export default function App() {
                         setUserRoleNameInput("");
                         setUserUsernameInput("");
                         setUserPasswordInput("");
+                        setSelectedPermissions([]);
                       }}
                       className="px-4 py-2 bg-slate-200 hover:bg-slate-250 text-slate-700 font-bold rounded-xl text-xs transition-colors cursor-pointer"
                     >

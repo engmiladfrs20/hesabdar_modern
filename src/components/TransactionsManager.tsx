@@ -12,6 +12,7 @@ interface TransactionsManagerProps {
   accounts: Account[];
   projects: Project[];
   contacts?: Contact[];
+  activeUser?: any;
   onAddTransaction: (tx: Partial<Transaction>) => void;
   onAddAccount: (acc: Partial<Account>) => void;
   onAddContact?: (contact: Partial<Contact>) => Promise<boolean | void> | boolean | void;
@@ -31,6 +32,7 @@ interface TransactionsManagerProps {
   }) => void;
   onDeleteTransaction?: (id: string) => void;
   onDeleteAccount?: (id: string) => void;
+  onApproveTransaction?: (id: string, approvalStatus: "approved" | "rejected", approvedAmount?: number) => void;
 }
 
 function numberToPersianWords(num: number): string {
@@ -100,15 +102,17 @@ export default function TransactionsManager({
   accounts,
   projects,
   contacts = [],
+  activeUser,
   onAddTransaction,
   onAddAccount,
   onAddContact,
   onAddProject,
   onPayTransaction,
   onDeleteTransaction,
-  onDeleteAccount
+  onDeleteAccount,
+  onApproveTransaction
 }: TransactionsManagerProps) {
-  const [activeSubTab, setActiveSubTab] = useState<"logs" | "accounts" | "add_tx">("logs");
+  const [activeSubTab, setActiveSubTab] = useState<"logs" | "accounts" | "add_tx" | "approvals">("logs");
   const [filterType, setFilterType] = useState<"all" | "income" | "expense" | "barter" | "attachment">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [personFilter, setPersonFilter] = useState<string>("all");
@@ -126,6 +130,7 @@ export default function TransactionsManager({
 
   // New Transaction Form state
   const [txType, setTxType] = useState<"income" | "expense">("expense");
+  const [customApprovalAmounts, setCustomApprovalAmounts] = useState<Record<string, string>>({});
   const [txProjId, setTxProjId] = useState(projects[0]?.id || "");
   const [txCat, setTxCat] = useState("خرید مصالح");
   const [txSubCat, setTxSubCat] = useState("");
@@ -667,24 +672,35 @@ export default function TransactionsManager({
         </div>
 
         {/* Sub Navigation */}
-        <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-medium self-stretch md:self-auto">
+        <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-medium self-stretch md:self-auto items-center">
           <button 
             onClick={() => setActiveSubTab("logs")}
-            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer ${activeSubTab === "logs" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer ${activeSubTab === "logs" ? "bg-white text-indigo-600 shadow-sm font-bold" : "text-slate-500 hover:text-slate-800"}`}
           >
             دفتر معین تراکنش‌ها
           </button>
           <button 
             onClick={() => setActiveSubTab("accounts")}
-            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer ${activeSubTab === "accounts" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer ${activeSubTab === "accounts" ? "bg-white text-indigo-600 shadow-sm font-bold" : "text-slate-500 hover:text-slate-800"}`}
           >
             حساب‌ها و تنخواه‌گردان‌ها
           </button>
           <button 
             onClick={() => setActiveSubTab("add_tx")}
-            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer ${activeSubTab === "add_tx" ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer ${activeSubTab === "add_tx" ? "bg-white text-indigo-600 shadow-sm font-bold" : "text-slate-500 hover:text-slate-800"}`}
           >
             ثبت دریافت/پرداخت (فاکتور)
+          </button>
+          <button 
+            onClick={() => setActiveSubTab("approvals")}
+            className={`px-4 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${activeSubTab === "approvals" ? "bg-white text-indigo-600 shadow-sm font-bold" : "text-slate-500 hover:text-slate-800"}`}
+          >
+            <span>بررسی و تأیید فاکتورها</span>
+            {transactions.filter(t => t.type === "expense" && (t.approvalStatus === "pending" || !t.approvalStatus)).length > 0 && (
+              <span className="bg-rose-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full shadow-xs">
+                {transactions.filter(t => t.type === "expense" && (t.approvalStatus === "pending" || !t.approvalStatus)).length}
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -949,7 +965,8 @@ export default function TransactionsManager({
 
                       // Compute payment values
                       const totalPaid = tx.payments ? tx.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
-                      const remainingToPay = tx.amount - totalPaid;
+                      const maxPayable = tx.type === "expense" && tx.approvedAmount !== undefined ? tx.approvedAmount : tx.amount;
+                      const remainingToPay = Math.max(0, maxPayable - totalPaid);
                       const paymentStatus = tx.paymentStatus || (tx.type === "income" ? "paid" : "unpaid");
 
                       return (
@@ -969,6 +986,23 @@ export default function TransactionsManager({
                             {isIncome ? "+" : "-"}{formatTomans(tx.amount)}
                           </td>
                           <td className="p-4 text-center">
+                            {tx.type === "expense" && (
+                              <div className="mb-2">
+                                {tx.approvalStatus === "approved" ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-150 text-[9px] font-black" title={`تأیید کننده: ${tx.approvedBy || "مدیر ارشد"}`}>
+                                    ✓ تأیید شده {tx.approvedAmount !== undefined && `(${formatTomans(tx.approvedAmount)})`}
+                                  </span>
+                                ) : tx.approvalStatus === "rejected" ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-150 text-[9px] font-black">
+                                    ❌ رد شده
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-150 text-[9px] font-black animate-pulse">
+                                    ⏳ منتظر تأیید مدیر
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             {isIncome ? (
                               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold">
                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -990,16 +1024,23 @@ export default function TransactionsManager({
                                   </span>
                                 ) : (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-150 text-[10px] font-bold">
-                                    پرداخت نشده
+                                    پرداخت نشده {tx.approvalStatus !== "approved" && "(عدم تأیید)"}
                                   </span>
                                 )}
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedTxForPayments(tx)}
-                                  className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5"
-                                >
-                                  {paymentStatus === "paid" ? "مشاهده اسناد پرداخت" : "ثبت/مشاهده پرداخت‌ها"}
-                                </button>
+                                
+                                {tx.approvalStatus === "approved" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedTxForPayments(tx)}
+                                    className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5 cursor-pointer"
+                                  >
+                                    {paymentStatus === "paid" ? "مشاهده اسناد پرداخت" : "ثبت/مشاهده پرداخت‌ها"}
+                                  </button>
+                                ) : (
+                                  <span className="mt-1 text-[8px] text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded font-bold">
+                                    🔐 قفل شده (نیاز به تایید مدیر ارشد)
+                                  </span>
+                                )}
                               </div>
                             )}
                           </td>
@@ -1786,20 +1827,22 @@ export default function TransactionsManager({
                               </td>
                               <td className="p-2.5 text-center">
                                 {p.receiptFileName ? (
-                                  <span className="inline-block px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded text-[8px] font-black" title={p.receiptFileName}>
-                                    📎 ضمیمه شده
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingAttachment({ name: p.receiptFileName || "", data: p.receiptFileData || "", personName: "", date: p.date, amount: p.amount, attachmentName: p.receiptFileName || "" })}
+                                    className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-100 rounded text-[9px] font-bold cursor-pointer"
+                                  >
+                                    مشاهده فیش
+                                  </button>
                                 ) : (
-                                  <span className="text-slate-300 italic font-light">فاقد پیوست</span>
+                                  <span className="text-slate-400 font-light">-</span>
                                 )}
                               </td>
                               <td className="p-2.5 text-center">
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setNewPayments(newPayments.filter(item => item.id !== p.id));
-                                  }}
-                                  className="text-rose-600 hover:text-rose-800 font-extrabold hover:bg-rose-50 px-2 py-0.5 rounded cursor-pointer"
+                                  onClick={() => setNewPayments(newPayments.filter((_, i) => i !== idx))}
+                                  className="p-1 text-rose-500 hover:text-rose-700 rounded cursor-pointer mx-auto block"
                                 >
                                   حذف
                                 </button>
@@ -1814,21 +1857,193 @@ export default function TransactionsManager({
               </div>
             </div>
 
-            {formError && (
-              <div className="bg-rose-50 border border-rose-200 text-rose-700 px-4 py-3 rounded-xl text-xs font-bold text-right shadow-xs">
-                ⚠️ {formError}
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-              <button 
+            {/* Submit and actions */}
+            <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-150">
+              <button
                 type="submit"
-                className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-extrabold text-xs shadow-md hover:shadow-lg transition-all cursor-pointer"
+                className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs transition-all shadow-md cursor-pointer hover:shadow-lg"
               >
-                {editingTxId ? "✓ بروزرسانی قطعی سند فاکتور و اسناد پرداخت" : "✓ ثبت قطعی فاکتور و اسناد پرداخت در دفاتر روزنامه"}
+                {editingTxId ? "✓ بروزرسانی فاکتور و اسناد مالی" : "✓ ثبت نهایی فاکتور و اسناد مالی"}
               </button>
+              {editingTxId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingTxId(null);
+                    setTxCat("خرید مصالح");
+                    setTxSubCat("");
+                    setTxAmount("");
+                    setTxProjId("");
+                    setTxAccount("");
+                    setTxDate("1403/04/03");
+                    setTxPerson("");
+                    setTxDesc("");
+                    setAttachedFileName("");
+                    setAttachedFileData("");
+                    setNewPayments([]);
+                    setActiveSubTab("logs");
+                  }}
+                  className="px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-bold text-xs transition-all cursor-pointer"
+                >
+                  انصراف از ویرایش
+                </button>
+              )}
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Tab 4: Factor Approvals panel */}
+      {activeSubTab === "approvals" && (
+        <div className="space-y-6">
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-2">
+            <h3 className="text-sm font-bold text-slate-800">بررسی و تأیید هزینه‌ها و فاکتورها توسط مدیریت ارشد</h3>
+            <p className="text-[11px] text-slate-400 font-light">
+              در این بخش کلیه هزینه‌ها، خریدها و فاکتورهای صادر شده در سیستم، پیش از تسویه نهایی، توسط مدیر ارشد بررسی و تأیید مبالغ کل یا جزئی (پرداخت جزئی) می‌شوند.
+            </p>
+            {activeUser && activeUser.role !== "manager" && activeUser.username?.toLowerCase() !== "admin" && (
+              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-[10px] font-bold">
+                ⚠️ هشدار دسترسی: شما با نقش <span className="text-rose-600">({activeUser.roleName})</span> وارد شده‌اید. امکان مشاهده وضعیت فاکتورها وجود دارد اما حق ویرایش و ثبت تأییدیه/رد فاکتورها صرفاً مخصوص مدیریت ارشد پروژه است.
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            {transactions.filter(t => t.type === "expense").length === 0 ? (
+              <div className="p-12 bg-white rounded-3xl border border-dashed border-slate-200 text-center text-slate-400 font-light text-xs">
+                هیچ تراکنش هزینه‌ای در سیستم ثبت نشده است.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4">
+                {transactions.filter(t => t.type === "expense").map(t => {
+                  const project = projects.find(p => p.id === t.projectId);
+                  const isPending = !t.approvalStatus || t.approvalStatus === "pending";
+                  const isApproved = t.approvalStatus === "approved";
+                  const isRejected = t.approvalStatus === "rejected";
+                  const inputVal = customApprovalAmounts[t.id] || "";
+
+                  return (
+                    <div key={t.id} className="bg-white rounded-2xl border border-slate-150 p-5 shadow-xs hover:shadow-md transition-all space-y-4 animate-fade-in">
+                      {/* Card Header */}
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className={`w-2.5 h-2.5 rounded-full ${
+                            isApproved ? "bg-emerald-500 animate-pulse" : isRejected ? "bg-rose-500" : "bg-amber-500 animate-pulse"
+                          }`} />
+                          <div>
+                            <span className="text-xs font-extrabold text-slate-800 block">فاکتور هزینه‌ای: {t.category} {t.subCategory ? `(${t.subCategory})` : ""}</span>
+                            <span className="text-[10px] text-slate-400 font-light block mt-0.5">پروژه: {project?.name || "نامشخص"} | تاریخ: {toFarsiDigits(t.date)} | ثبت‌کننده: {t.createdBy || "ناظر فنی"}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          {isApproved && (
+                            <div className="bg-emerald-50 border border-emerald-150 text-emerald-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
+                              <span>✓ تأیید شده برای پرداخت</span>
+                              {t.approvedAmount !== undefined && t.approvedAmount !== t.amount && (
+                                <span className="bg-emerald-600 text-white px-1.5 py-0.5 rounded text-[8px]">پرداخت جزئی</span>
+                              )}
+                            </div>
+                          )}
+                          {isRejected && (
+                            <div className="bg-rose-50 border border-rose-150 text-rose-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
+                              <span>❌ رد شده توسط مدیریت</span>
+                            </div>
+                          )}
+                          {isPending && (
+                            <div className="bg-amber-50 border border-amber-150 text-amber-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
+                              <span>⏳ منتظر بررسی و تأیید</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Card details */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
+                          <span className="text-[10px] text-slate-400 block font-bold">مبلغ اصلی فاکتور:</span>
+                          <span className="text-sm font-extrabold text-slate-800 font-mono block mt-1">{formatTomans(t.amount)}</span>
+                        </div>
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
+                          <span className="text-[10px] text-slate-400 block font-bold">طرف حساب (ذی‌نفع):</span>
+                          <span className="text-xs font-extrabold text-slate-800 block mt-1.5">{t.personName || "فاقد طرف حساب"}</span>
+                        </div>
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
+                          <span className="text-[10px] text-slate-400 block font-bold">مبلغ مصوب تأیید شده:</span>
+                          <span className="text-sm font-extrabold text-indigo-700 font-mono block mt-1">
+                            {isApproved ? formatTomans(t.approvedAmount ?? t.amount) : "هنوز تأیید نشده"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Description */}
+                      {t.description && (
+                        <p className="text-[10px] text-slate-500 bg-slate-50/50 p-2.5 rounded-xl border border-slate-150 leading-relaxed font-light">
+                          <span className="font-bold">توضیحات فاکتور:</span> {t.description}
+                        </p>
+                      )}
+
+                      {/* Audit Details */}
+                      {t.approvedBy && (
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150 text-[10px] text-slate-500 font-medium grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>✍️ بررسی‌کننده: <span className="font-bold text-slate-700">{t.approvedBy}</span></div>
+                          <div className="sm:text-left">📆 تاریخ ثبت نظر: <span className="font-mono text-slate-700">{toFarsiDigits(t.approvedDate || "")}</span></div>
+                        </div>
+                      )}
+
+                      {/* Actions for Manager */}
+                      {isPending && (activeUser?.role === "manager" || activeUser?.username?.toLowerCase() === "admin") && (
+                        <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                          {/* Left: Partial payment inputs */}
+                          <div className="space-y-1.5 w-full sm:max-w-xs text-right" dir="rtl">
+                            <label className="text-[10px] text-slate-500 font-bold block">مبلغ مصوب برای واریز (ریال):</label>
+                            <div className="flex gap-2">
+                              <FormattedAmountInput
+                                placeholder={`مبلغ دلخواه (پیش‌فرض: ${t.amount})`}
+                                value={inputVal}
+                                onChange={val => setCustomApprovalAmounts({ ...customApprovalAmounts, [t.id]: val })}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 font-mono"
+                              />
+                            </div>
+                            {inputVal && Number(inputVal) > 0 && (
+                              <div className="text-[9px] font-bold text-indigo-600 mt-1">
+                                ✍️ تأیید مبلّغ {numberToPersianWords(Number(inputVal))} ریال
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Right: Approve/Reject CTA buttons */}
+                          <div className="flex items-center gap-2 self-end sm:self-auto">
+                            <button
+                              onClick={() => {
+                                if (onApproveTransaction) {
+                                  onApproveTransaction(t.id, "rejected");
+                                }
+                              }}
+                              className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-150 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-3xs"
+                            >
+                              ❌ رد کامل فاکتور
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (onApproveTransaction) {
+                                  const approvedAmt = inputVal ? Number(inputVal) : undefined;
+                                  onApproveTransaction(t.id, "approved", approvedAmt);
+                                }
+                              }}
+                              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm"
+                            >
+                              ✓ تأیید مصوب فاکتور
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
