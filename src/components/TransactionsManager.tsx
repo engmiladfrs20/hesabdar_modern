@@ -1,5 +1,6 @@
 import React, { useState, useRef } from "react";
 import { Transaction, Account, Project, Contact } from "../types";
+import { getTodayShamsiString } from "../utils/shamsi";
 import { Plus, Landmark, DollarSign, Receipt, FileText, ArrowUpRight, ArrowDownRight, Paperclip, Search, Sparkles, SlidersHorizontal, Download, CreditCard, Edit, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { CONSTRUCTION_STAGES } from "../data/constructionStages";
@@ -137,7 +138,7 @@ export default function TransactionsManager({
   const [txAmount, setTxAmount] = useState("");
   const [txAccount, setTxAccount] = useState(accounts[0]?.id || "");
   const [txPerson, setTxPerson] = useState("");
-  const [txDate, setTxDate] = useState("1403/04/03");
+  const [txDate, setTxDate] = useState(() => getTodayShamsiString());
   const [txDesc, setTxDesc] = useState("");
   const [isNonCash, setIsNonCash] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -152,7 +153,7 @@ export default function TransactionsManager({
   // Individual payment slip creation state
   const [isAddingPaymentDoc, setIsAddingPaymentDoc] = useState(false);
   const [payDocAmount, setPayDocAmount] = useState("");
-  const [payDocDate, setPayDocDate] = useState("1403/04/03");
+  const [payDocDate, setPayDocDate] = useState(() => getTodayShamsiString());
   const [payDocAccountId, setPayDocAccountId] = useState(accounts[0]?.id || "");
   const [payDocRefNum, setPayDocRefNum] = useState("");
   const [payDocMethod, setPayDocMethod] = useState("فیش بانکی");
@@ -181,7 +182,7 @@ export default function TransactionsManager({
   const [viewingAttachment, setViewingAttachment] = useState<Transaction | null>(null);
   const [selectedTxForPayments, setSelectedTxForPayments] = useState<Transaction | null>(null);
   const [payAmount, setPayAmount] = useState("");
-  const [payDate, setPayDate] = useState("1403/04/03");
+  const [payDate, setPayDate] = useState(() => getTodayShamsiString());
   const [payAccount, setPayAccount] = useState(accounts[0]?.id || "");
   const [payRef, setPayRef] = useState("");
   const [payDesc, setPayDesc] = useState("");
@@ -608,6 +609,23 @@ export default function TransactionsManager({
     });
   });
 
+  const defaultExpenseCategories = ["خرید مصالح", "دستمزد", "علی‌الحساب", "اجاره ماشین‌آلات", "مالیات و عوارض", "سایر مخارج"];
+  const defaultIncomeCategories = ["پیش‌فروش", "فروش واحد", "آورده", "سایر"];
+
+  const customCategories = Array.from(
+    new Set(
+      (transactions || [])
+        .filter(t => t.type === txType && t.category)
+        .map(t => t.category)
+    )
+  ).filter(cat => {
+    if (txType === "expense") {
+      return !defaultExpenseCategories.includes(cat);
+    } else {
+      return !defaultIncomeCategories.includes(cat);
+    }
+  });
+
   const categoryOptions: ComboboxOption[] = txType === "expense" ? [
     { value: "خرید مصالح", label: "خرید مصالح" },
     { value: "دستمزد", label: "دستمزد روزمزد / پیمانکار دست دوم" },
@@ -615,11 +633,13 @@ export default function TransactionsManager({
     { value: "اجاره ماشین‌آلات", label: "اجاره تاور کرین و ماشین‌آلات" },
     { value: "مالیات و عوارض", label: "مالیات، بیمه و عوارض شهرداری" },
     { value: "سایر مخارج", label: "سایر مخارج کارگاهی" },
+    ...customCategories.map(cat => ({ value: cat, label: cat }))
   ] : [
     { value: "پیش‌فروش", label: "پیش‌فروش واحدها" },
     { value: "فروش واحد", label: "فروش قطعی آپارتمان" },
     { value: "آورده", label: "آورده نقدی شریک/سرمایه‌گذار" },
     { value: "سایر", label: "سایر دریافتی‌ها" },
+    ...customCategories.map(cat => ({ value: cat, label: cat }))
   ];
 
   const accountOptions: ComboboxOption[] = accounts.map(a => ({
@@ -1354,6 +1374,11 @@ export default function TransactionsManager({
                       onChange={setTxCat}
                       placeholder="دسته‌بندی مالی را انتخاب یا جستجو کنید..."
                       emptyMessage="دسته‌بندی یافت نشد."
+                      allowCustom={true}
+                      customAddLabel="افزودن دسته‌بندی جدید"
+                      onCustomAdd={(newValue) => {
+                        setTxCat(newValue);
+                      }}
                     />
                   </div>
 
@@ -1875,7 +1900,7 @@ export default function TransactionsManager({
                     setTxAmount("");
                     setTxProjId("");
                     setTxAccount("");
-                    setTxDate("1403/04/03");
+                    setTxDate(getTodayShamsiString());
                     setTxPerson("");
                     setTxDesc("");
                     setAttachedFileName("");

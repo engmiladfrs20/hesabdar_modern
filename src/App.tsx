@@ -59,6 +59,10 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
   
+  // --- Automated Database Backup & Recovery States ---
+  const [showRestoreBackupBanner, setShowRestoreBackupBanner] = useState(false);
+  const [backupDbData, setBackupDbData] = useState<DatabaseSchema | null>(null);
+  
   // Custom states for company management & offline sync
   const [showCompanyModal, setShowCompanyModal] = useState(false);
   const [newCompanyName, setNewCompanyName] = useState("");
@@ -148,6 +152,7 @@ export default function App() {
         throw new Error(data.error);
       }
       setDb(data);
+      checkAndOfferRestore(data);
     } catch (err: any) {
       console.error("Error fetching db from database backend:", err);
       setFetchError(err.message || "خطای نامشخص در برقراری ارتباط با پایگاه داده");
@@ -155,6 +160,62 @@ export default function App() {
       setIsSyncing(false);
     }
   };
+
+  const checkAndOfferRestore = (serverDb: DatabaseSchema) => {
+    try {
+      const backupStr = localStorage.getItem("hesabdar_db_backup");
+      if (!backupStr) return;
+      const backupDb = JSON.parse(backupStr) as DatabaseSchema;
+      if (!backupDb || !backupDb.projects) return;
+
+      const serverProjectIds = new Set(serverDb.projects?.map(p => p.id) || []);
+      const backupProjectIds = backupDb.projects?.map(p => p.id) || [];
+      const hasNewerProjects = backupProjectIds.some(id => !serverProjectIds.has(id));
+
+      const serverTxCount = serverDb.transactions?.length || 0;
+      const backupTxCount = backupDb.transactions?.length || 0;
+
+      if (hasNewerProjects || backupTxCount > serverTxCount) {
+        setBackupDbData(backupDb);
+        setShowRestoreBackupBanner(true);
+      }
+    } catch (e) {
+      console.error("Error checking browser backup:", e);
+    }
+  };
+
+  const handleRestoreFromBrowserBackup = async () => {
+    if (!backupDbData) return;
+    setIsSyncing(true);
+    try {
+      const response = await fetch(getApiUrl("/api/db/import"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(backupDbData)
+      });
+      const resData = await response.json();
+      if (resData.status === "success" || !resData.error) {
+        setShowRestoreBackupBanner(false);
+        setSyncSuccess(true);
+        setTimeout(() => setSyncSuccess(false), 2000);
+        await fetchDb();
+      } else {
+        alert("خطا در بازیابی کپی پشتیبان: " + (resData.error || "خطای نامشخص"));
+      }
+    } catch (err: any) {
+      console.error("Error importing backup:", err);
+      alert("خطا در همگام‌سازی و اعمال کپی پشتیبان: " + err.message);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Keep a local storage backup of the database in the browser
+  useEffect(() => {
+    if (db && db.projects && db.projects.length > 0) {
+      localStorage.setItem("hesabdar_db_backup", JSON.stringify(db));
+    }
+  }, [db]);
 
   useEffect(() => {
     fetchDb();
@@ -1236,6 +1297,38 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800" dir="rtl">
+      
+      {/* Browser Backup Restore Banner */}
+      {showRestoreBackupBanner && backupDbData && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 relative z-50 shadow-xs animate-fade-in" dir="rtl">
+          <div className="flex items-start gap-3">
+            <span className="text-xl shrink-0 mt-0.5">⚠️</span>
+            <div>
+              <h4 className="text-xs font-extrabold text-amber-900">اطلاعات کپی پشتیبان مرورگر شما کامل‌تر است</h4>
+              <p className="text-[11px] text-amber-700 font-medium mt-1 leading-relaxed">
+                کپی پشتیبان ذخیره شده در مرورگر شما دارای اطلاعات بیشتری است (احتمالاً به دلیل ری‌استارت سرور یا بروزرسانی). 
+                اگر مایلید کل اطلاعات ثبت‌شده قبلی خود ({backupDbData.projects?.length || 0} پروژه و {backupDbData.transactions?.length || 0} تراکنش مالی) را بازیابی و روی سرور اعمال کنید، دکمه زیر را کلیک کنید تا اطلاعات به صورت خودکار بازیابی و حفظ شوند.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2.5 shrink-0">
+            <button
+              onClick={handleRestoreFromBrowserBackup}
+              disabled={isSyncing}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
+              <span>✓ بازیابی کپی پشتیبان مرورگر</span>
+            </button>
+            <button
+              onClick={() => setShowRestoreBackupBanner(false)}
+              className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+            >
+              صرف‌نظر
+            </button>
+          </div>
+        </div>
+      )}
       
       {/* Top Professional Header Bar */}
       <header className="bg-white border-b border-slate-150 h-16 sticky top-0 z-30 px-6 flex justify-between items-center shadow-xs">

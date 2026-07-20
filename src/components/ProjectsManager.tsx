@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Project, UnitItem, Transaction } from "../types";
+import { getTodayShamsiString } from "../utils/shamsi";
 import { 
   Plus, Calculator, Percent, ShieldCheck, ChevronLeft, Building, 
   MapPin, Users, Coins, CheckCircle, RefreshCw, Trash2, Edit3, Settings
@@ -78,6 +79,7 @@ export default function ProjectsManager({
   const [editBudget, setEditBudget] = useState("");
   const [editStage, setEditStage] = useState("");
   const [editSupervisor, setEditSupervisor] = useState("");
+  const [editNumUnits, setEditNumUnits] = useState("");
 
   // Add Single Unit States
   const [isAddingSingleUnit, setIsAddingSingleUnit] = useState(false);
@@ -131,6 +133,7 @@ export default function ProjectsManager({
       setEditBudget(String(selectedProj.budget || ""));
       setEditStage(selectedProj.currentStage || CONSTRUCTION_STAGES_NAMES[0]);
       setEditSupervisor((selectedProj as any).supervisorName || "مهندس میلاد فرخی");
+      setEditNumUnits(String(selectedProj.numberOfUnits || ""));
     }
   }, [selectedProj, isEditingProj]);
 
@@ -227,7 +230,8 @@ export default function ProjectsManager({
       totalArea: Number(editArea),
       budget: Number(editBudget),
       currentStage: editStage,
-      supervisorName: editSupervisor
+      supervisorName: editSupervisor,
+      numberOfUnits: editNumUnits ? Number(editNumUnits) : undefined
     });
     setIsEditingProj(false);
   };
@@ -317,7 +321,7 @@ export default function ProjectsManager({
     onAddUnitExpense(selectedUnit.id, {
       title: unitExpTitle,
       amount: Number(unitExpAmount),
-      date: "1403/04/03"
+      date: getTodayShamsiString()
     });
     setUnitExpTitle("");
     setUnitExpAmount("");
@@ -568,6 +572,16 @@ export default function ProjectsManager({
                 value={editSupervisor}
                 onChange={e => setEditSupervisor(e.target.value)}
                 className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-amber-500 text-slate-900"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-slate-600 font-semibold">تعداد کل واحدها</label>
+              <input 
+                type="number" 
+                value={editNumUnits}
+                onChange={e => setEditNumUnits(e.target.value)}
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-amber-500 text-slate-900 font-mono text-center font-bold"
+                placeholder="تعداد واحدها"
               />
             </div>
 

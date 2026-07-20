@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import { getTodayShamsiString } from "../utils/shamsi";
 import { 
   Users, 
   Wallet, 
@@ -255,7 +256,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
     stage: "عمومی",
     description: "",
     amount: "",
-    expenseDate: "1403/04/03",
+    expenseDate: getTodayShamsiString(),
     paymentStatus: "paid" as "paid" | "partially_paid" | "unpaid",
     paidAmount: "",
     referenceNumber: "",
@@ -265,7 +266,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
 
   const [selectedExpenseForPay, setSelectedExpenseForPay] = useState<ImprestExpense | null>(null);
   const [payAmount, setPayAmount] = useState("");
-  const [payDate, setPayDate] = useState("1403/04/03");
+  const [payDate, setPayDate] = useState(() => getTodayShamsiString());
   const [payRef, setPayRef] = useState("");
   const [payDesc, setPayDesc] = useState("");
 
@@ -275,7 +276,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
     unitId: "",
     contractArea: "",
     pricePerMeter: "",
-    contractDate: "1403/04/03"
+    contractDate: getTodayShamsiString()
   });
 
   const [selectedPreSaleId, setSelectedPreSaleId] = useState<string | null>(null);
@@ -284,7 +285,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
   // States for custom installment management
   const [newInstForm, setNewInstForm] = useState({
     installmentName: "",
-    dueDate: "1403/04/03",
+    dueDate: getTodayShamsiString(),
     amount: ""
   });
 
@@ -298,7 +299,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
   // Pre-sale contract payment forms states
   const [presalePayAmount, setPresalePayAmount] = useState("");
   const [presalePayAccountId, setPresalePayAccountId] = useState("");
-  const [presalePayDate, setPresalePayDate] = useState("1403/04/03");
+  const [presalePayDate, setPresalePayDate] = useState(() => getTodayShamsiString());
   const [presalePayRef, setPresalePayRef] = useState("");
   const [presalePayDesc, setPresalePayDesc] = useState("");
 
@@ -327,7 +328,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
       const data = await response.json();
       if (data.status === "success") {
         setSuccessMsg("قسط جدید با موفقیت به قرارداد پیش‌فروش اضافه شد.");
-        setNewInstForm({ installmentName: "", dueDate: "1403/04/03", amount: "" });
+        setNewInstForm({ installmentName: "", dueDate: getTodayShamsiString(), amount: "" });
         await onRefresh();
       } else {
         setErrorMsg(data.error || "خطا در افزودن قسط");
@@ -778,7 +779,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
           stage: "عمومی",
           description: "",
           amount: "",
-          expenseDate: "1403/04/03",
+          expenseDate: getTodayShamsiString(),
           paymentStatus: "paid",
           paidAmount: "",
           referenceNumber: "",
@@ -864,7 +865,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
           unitId: "",
           contractArea: "",
           pricePerMeter: "",
-          contractDate: "1403/04/03"
+          contractDate: getTodayShamsiString()
         });
         await onRefresh();
       } else {
@@ -889,7 +890,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
         body: JSON.stringify({
           installmentId,
           accountId: "a1", // Default account Melli
-          paidDate: "1403/04/03"
+          paidDate: getTodayShamsiString()
         })
       });
       const data = await response.json();

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Material, MaterialTransaction, Project } from "../types";
+import { getTodayShamsiString } from "../utils/shamsi";
 import { Package, Search, Plus, ArrowUpRight, ArrowDownRight, Archive, Tag, ClipboardList, Layers, HelpCircle, Edit, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { CONSTRUCTION_STAGES } from "../data/constructionStages";
@@ -158,7 +159,7 @@ export default function WarehouseManager({
       unitPrice: Number(txPrice || 0),
       personName: txPerson,
       description: txDesc,
-      date: "1403/04/03"
+      date: getTodayShamsiString()
     });
 
     setTxQty("");
