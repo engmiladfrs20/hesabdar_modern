@@ -1714,7 +1714,11 @@ export default function App() {
               )}
               {activeTab === "contracts_imprests" && (
                 <ContractsAndImprests 
-                  db={db}
+                  db={{
+                    ...db,
+                    units: db.units.filter(u => !u.isDeleted)
+                  }}
+                  activeCompanyId={activeCompanyId}
                   getApiUrl={getApiUrl}
                   onRefresh={fetchDb}
                   projects={filteredProjects}
@@ -1726,6 +1730,7 @@ export default function App() {
               {activeTab === "payrolls_timesheets" && (
                 <PayrollTimesheets 
                   db={db}
+                  activeCompanyId={activeCompanyId}
                   getApiUrl={getApiUrl}
                   onRefresh={fetchDb}
                   projects={filteredProjects}
@@ -1733,7 +1738,13 @@ export default function App() {
               )}
               {activeTab === "accounting_reports" && (
                 <AccountingReports 
-                  db={db}
+                  db={{
+                    ...db,
+                    projects: filteredProjects,
+                    transactions: filteredTransactions.filter(t => !t.isDeleted),
+                    checks: filteredChecks,
+                    units: db.units.filter(u => !u.isDeleted && filteredProjects.some(p => p.id === u.projectId))
+                  }}
                   projects={filteredProjects}
                   onAddContact={handleAddContact}
                   onAddProject={handleAddProject}

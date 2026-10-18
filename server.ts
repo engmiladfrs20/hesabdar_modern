@@ -206,6 +206,7 @@ interface Transaction {
   paymentStatus?: "paid" | "partially_paid" | "unpaid";
   payments?: TransactionPayment[];
   preSaleId?: string;
+  contactId?: string;
   isDeleted?: boolean;
   approvalStatus?: "pending" | "approved" | "rejected";
   approvedAmount?: number;
@@ -322,6 +323,7 @@ interface PreSaleInstallment {
   amount: number;
   isPaid: boolean;
   paidDate?: string;
+  paidAmount?: number;
   amountPaid?: number;
   percentPaid?: number;
 }
@@ -334,6 +336,52 @@ interface AlertLog {
   message: string;
   sendDate: string;
   isSent: boolean;
+}
+
+interface TimesheetItem {
+  id: string;
+  projectId: string;
+  contactId: string;
+  personName?: string;
+  date: string;
+  hoursWorked: number;
+  overtimeHours?: number;
+  dailyRate: number;
+  overtimeRate?: number;
+  totalAmount?: number;
+  totalPay?: number;
+  stage?: string;
+  description: string;
+  isPaid?: boolean;
+}
+
+interface PayrollItem {
+  id: string;
+  projectId: string;
+  contactId: string;
+  personName?: string;
+  month?: string;
+  year?: string;
+  baseSalary?: number;
+  housingAllowance?: number;
+  foodAllowance?: number;
+  childAllowance?: number;
+  overtimeHours?: number;
+  overtimePay?: number;
+  bonuses?: number;
+  insuranceWorker?: number;
+  insuranceEmployer?: number;
+  taxDeduction?: number;
+  advanceDeduction?: number;
+  otherDeductions?: number;
+  grossSalary?: number;
+  netPayable?: number;
+  amount?: number;
+  paymentDate: string;
+  accountId: string;
+  description?: string;
+  transactionId?: string;
+  isPaid?: boolean;
 }
 
 interface DatabaseSchema {
@@ -352,6 +400,48 @@ interface DatabaseSchema {
   preSales: PreSale[];
   preSaleInstallments: PreSaleInstallment[];
   alertsLog: AlertLog[];
+  timesheets?: TimesheetItem[];
+  payrolls?: PayrollItem[];
+}
+
+function getTodayShamsiServer(): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US-u-ca-persian", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === "year")?.value;
+    const m = parts.find(p => p.type === "month")?.value;
+    const d = parts.find(p => p.type === "day")?.value;
+    if (y && m && d) {
+      return `${y}/${m.padStart(2, "0")}/${d.padStart(2, "0")}`;
+    }
+  } catch {
+    // Fallback
+  }
+  return "1404/01/01";
+}
+
+function addShamsiMonths(shamsiDate: string, monthsToAdd: number): string {
+  const parts = (shamsiDate || getTodayShamsiServer()).split("/").map(Number);
+  if (parts.length !== 3 || isNaN(parts[0])) return getTodayShamsiServer();
+  let [y, m, d] = parts;
+  const totalMonths = (y * 12 + (m - 1)) + monthsToAdd;
+  y = Math.floor(totalMonths / 12);
+  m = (totalMonths % 12) + 1;
+  if (m > 6 && d > 30) d = 30;
+  if (m === 12 && d > 29) d = 29;
+  return `${y}/${String(m).padStart(2, "0")}/${String(d).padStart(2, "0")}`;
+}
+
+function getProjectCompanyId(db: DatabaseSchema, projectId?: string, fallbackCompanyId?: string): string {
+  if (fallbackCompanyId) return fallbackCompanyId;
+  if (projectId && db.projects) {
+    const proj = db.projects.find(p => p.id === projectId);
+    if (proj && proj.companyId) return proj.companyId;
+  }
+  return db.companies?.[0]?.id || "c1";
 }
 
 const SEED_STAGES = [
@@ -874,52 +964,63 @@ app.post("/api/companies/delete", (req, res) => {
   }
 });
 
-// 3. Add Project
+// 3. Add or Update Project
 app.post("/api/projects", (req, res) => {
   const db = readDb();
+  const index = db.projects.findIndex(p => p.id === req.body.id);
+  const isNew = index < 0;
+  const existingProj = !isNew ? db.projects[index] : undefined;
+
   const newProject: Project = {
     id: req.body.id || "p_" + Date.now(),
-    companyId: req.body.companyId || "c1",
+    companyId: req.body.companyId || existingProj?.companyId || "c1",
     name: req.body.name,
-    address: req.body.address,
+    address: req.body.address || "",
     totalArea: Number(req.body.totalArea || 0),
     budget: Number(req.body.budget || 0),
-    stages: req.body.stages || SEED_STAGES,
-    currentStage: req.body.currentStage || SEED_STAGES[0],
-    status: req.body.status || "active",
-    supervisorName: req.body.supervisorName || "مهندس میلاد فرخی"
+    stages: req.body.stages || existingProj?.stages || SEED_STAGES,
+    currentStage: req.body.currentStage || existingProj?.currentStage || SEED_STAGES[0],
+    status: req.body.status || existingProj?.status || "active",
+    supervisorName: req.body.supervisorName || existingProj?.supervisorName || "مهندس میلاد فرخی",
+    numberOfUnits: req.body.numberOfUnits !== undefined ? Number(req.body.numberOfUnits) : existingProj?.numberOfUnits,
+    defaultUnitArea: req.body.defaultUnitArea !== undefined ? Number(req.body.defaultUnitArea) : existingProj?.defaultUnitArea,
+    defaultUnitPrice: req.body.defaultUnitPrice !== undefined ? Number(req.body.defaultUnitPrice) : existingProj?.defaultUnitPrice,
+    isDeleted: req.body.isDeleted !== undefined ? !!req.body.isDeleted : existingProj?.isDeleted,
+    deletedAt: req.body.deletedAt !== undefined ? req.body.deletedAt : existingProj?.deletedAt
   };
 
-  // Check if exists (update) or create new
-  const index = db.projects.findIndex(p => p.id === newProject.id);
-  const isNew = index < 0;
   if (!isNew) {
     db.projects[index] = newProject;
   } else {
     db.projects.push(newProject);
   }
 
-  // Auto-generate units if requested (only for newly created projects)
-  if (isNew && req.body.numberOfUnits && Number(req.body.numberOfUnits) > 0) {
-    const numUnits = Number(req.body.numberOfUnits);
-    const defArea = Number(req.body.defaultUnitArea || 100);
-    const defPrice = Number(req.body.defaultUnitPrice || 35000000);
+  // Auto-generate units if requested (on new project or if numberOfUnits increased on edit)
+  if (req.body.numberOfUnits && Number(req.body.numberOfUnits) > 0) {
+    const requestedUnits = Number(req.body.numberOfUnits);
+    const defArea = Number(req.body.defaultUnitArea || newProject.defaultUnitArea || 100);
+    const defPrice = Number(req.body.defaultUnitPrice || newProject.defaultUnitPrice || 35000000);
     
     if (!db.units) db.units = [];
-    for (let i = 1; i <= numUnits; i++) {
-      const unitNumber = String(100 + i);
-      const floor = String(Math.ceil(i / 2)); // 2 units per floor
-      db.units.push({
-        id: "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100),
-        projectId: newProject.id,
-        unitNumber,
-        floor,
-        area: defArea,
-        pricePerMeter: defPrice,
-        totalPrice: defArea * defPrice,
-        status: "available",
-        specificExpenses: []
-      });
+    const currentActiveUnits = db.units.filter(u => u.projectId === newProject.id && !u.isDeleted);
+    const startIdx = isNew ? 1 : (currentActiveUnits.length + 1);
+
+    if (requestedUnits >= startIdx) {
+      for (let i = startIdx; i <= requestedUnits; i++) {
+        const unitNumber = String(100 + i);
+        const floor = String(Math.ceil(i / 2)); // 2 units per floor
+        db.units.push({
+          id: "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100),
+          projectId: newProject.id,
+          unitNumber,
+          floor,
+          area: defArea,
+          pricePerMeter: defPrice,
+          totalPrice: defArea * defPrice,
+          status: "available",
+          specificExpenses: []
+        });
+      }
     }
   }
 
@@ -927,34 +1028,27 @@ app.post("/api/projects", (req, res) => {
   res.json({ status: "success", project: newProject });
 });
 
-// 4. Add Company
-app.post("/api/companies", (req, res) => {
-  const db = readDb();
-  const newCompany: Company = {
-    id: "c_" + Date.now(),
-    name: req.body.name,
-    code: req.body.code || String(Math.floor(Math.random() * 90000) + 10000)
-  };
-  db.companies.push(newCompany);
-  writeDb(db);
-  res.json({ status: "success", company: newCompany });
-});
-
 // 5. Add/Update Account
 app.post("/api/accounts", (req, res) => {
   const db = readDb();
+  const index = db.accounts.findIndex(a => a.id === req.body.id);
+  const existingAcc = index >= 0 ? db.accounts[index] : undefined;
+
   const newAccount: Account = {
     id: req.body.id || "a_" + Date.now(),
     name: req.body.name,
     type: req.body.type,
-    typeName: req.body.typeName || "حساب",
-    accountNumber: req.body.accountNumber,
-    bankName: req.body.bankName,
+    typeName: req.body.typeName || existingAcc?.typeName || "حساب",
+    accountNumber: req.body.accountNumber !== undefined ? req.body.accountNumber : existingAcc?.accountNumber,
+    bankName: req.body.bankName !== undefined ? req.body.bankName : existingAcc?.bankName,
     balance: Number(req.body.balance || 0),
-    projectId: req.body.projectId || undefined
+    code: req.body.code || existingAcc?.code || ("101" + String(db.accounts.length + 1).padStart(3, "0")),
+    level: req.body.level || existingAcc?.level || 3,
+    parentCode: req.body.parentCode || existingAcc?.parentCode || (req.body.type === "investor" ? "301" : "101"),
+    nature: req.body.nature || existingAcc?.nature || (req.body.type === "investor" ? "creditor" : "debtor"),
+    projectId: req.body.projectId || existingAcc?.projectId || undefined
   };
 
-  const index = db.accounts.findIndex(a => a.id === newAccount.id);
   if (index >= 0) {
     db.accounts[index] = newAccount;
   } else {
@@ -983,6 +1077,16 @@ app.post("/api/accounts/delete", (req, res) => {
   }
 });
 
+// Helper to get how much of an expense transaction was paid in cash/bank
+function getTxPaidAmount(tx: Transaction): number {
+  if (tx.isNonCash) return tx.amount;
+  if (tx.payments && tx.payments.length > 0) {
+    return tx.payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+  }
+  if (tx.paymentStatus === "unpaid") return 0;
+  return tx.amount;
+}
+
 // 6. Add/Update Transaction (Receipts & Payments)
 app.post("/api/transactions", (req, res) => {
   const db = readDb();
@@ -990,7 +1094,7 @@ app.post("/api/transactions", (req, res) => {
   const existingIndex = db.transactions.findIndex(t => t.id === req.body.id);
   if (existingIndex >= 0) {
     const oldTx = db.transactions[existingIndex];
-    // Revert old transaction balance adjustments
+    // Revert old transaction account balance adjustments
     if (!oldTx.isNonCash) {
       if (oldTx.payments && oldTx.payments.length > 0) {
         oldTx.payments.forEach(p => {
@@ -1014,11 +1118,26 @@ app.post("/api/transactions", (req, res) => {
         }
       }
     }
+
+    // Revert old transaction contact balance adjustments
+    if (oldTx.personName && db.contacts) {
+      const oldContact = db.contacts.find(c => c.name.trim() === oldTx.personName.trim());
+      if (oldContact) {
+        if (oldTx.type === "expense" && !oldTx.isNonCash) {
+          const oldUnpaid = Math.max(0, oldTx.amount - getTxPaidAmount(oldTx));
+          if (oldUnpaid > 0) {
+            oldContact.balance = (oldContact.balance || 0) - oldUnpaid;
+          }
+        } else if (oldTx.type === "income" && oldContact.role === "pre_buyer") {
+          oldContact.balance = (oldContact.balance || 0) + oldTx.amount;
+        }
+      }
+    }
   }
 
   const newTransaction: Transaction = {
     id: req.body.id || "t_" + Date.now(),
-    companyId: req.body.companyId || "c1",
+    companyId: getProjectCompanyId(db, req.body.projectId, req.body.companyId),
     projectId: req.body.projectId,
     type: req.body.type, // income / expense
     category: req.body.category,
@@ -1026,7 +1145,7 @@ app.post("/api/transactions", (req, res) => {
     amount: Number(req.body.amount || 0),
     accountId: req.body.accountId,
     personName: req.body.personName,
-    date: req.body.date || "1403/01/01",
+    date: req.body.date || getTodayShamsiServer(),
     description: req.body.description || "",
     isNonCash: !!req.body.isNonCash,
     barterDetails: req.body.barterDetails,
@@ -1093,7 +1212,7 @@ app.post("/api/transactions", (req, res) => {
     }
   }
 
-  // Auto-pairing with pre-sales if personName matches a pre-buyer contact
+  // Auto-pairing with pre-sales & updating contact balance
   if (newTransaction.personName) {
     const contact = db.contacts?.find(c => c.name.trim() === newTransaction.personName!.trim());
     if (contact) {
@@ -1105,10 +1224,20 @@ app.post("/api/transactions", (req, res) => {
           newTransaction.category = "پیش‌فروش";
         }
         
-        // Let's also attach the projectId if not set or empty
+        // Attach the projectId if not set or empty
         if (!newTransaction.projectId) {
           newTransaction.projectId = preSale.projectId;
         }
+      }
+
+      // Sync contact balance for credit/unpaid invoices or pre-buyer receipts
+      if (newTransaction.type === "expense" && !newTransaction.isNonCash) {
+        const unpaidAmt = Math.max(0, newTransaction.amount - getTxPaidAmount(newTransaction));
+        if (unpaidAmt > 0) {
+          contact.balance = (contact.balance || 0) + unpaidAmt;
+        }
+      } else if (newTransaction.type === "income" && contact.role === "pre_buyer") {
+        contact.balance = Math.max(0, (contact.balance || 0) - newTransaction.amount);
       }
     }
   }
@@ -1195,10 +1324,11 @@ app.post("/api/transactions/pay", (req, res) => {
     savedReceiptName = saveBase64File(receiptFileData, receiptFileName);
   }
   
+  const payNum = Number(amount);
   const newPayment = {
     id: "p_" + Date.now(),
-    amount: Number(amount),
-    date: date || "1403/01/01",
+    amount: payNum,
+    date: date || getTodayShamsiServer(),
     accountId,
     referenceNumber: referenceNumber || "",
     settlementMethod: settlementMethod || "فیش بانکی",
@@ -1225,7 +1355,15 @@ app.post("/api/transactions/pay", (req, res) => {
   if (accountId) {
     const acc = db.accounts.find(a => a.id === accountId);
     if (acc) {
-      acc.balance -= Number(amount);
+      acc.balance -= payNum;
+    }
+  }
+
+  // Deduct from contact creditor balance when paying an expense invoice
+  if (tx.personName && db.contacts && tx.type === "expense") {
+    const contact = db.contacts.find(c => c.name.trim() === tx.personName.trim());
+    if (contact) {
+      contact.balance = (contact.balance || 0) - payNum;
     }
   }
 
@@ -1272,6 +1410,21 @@ app.post("/api/transactions/delete", (req, res) => {
           }
         }
       }
+
+      // Revert contact balance logic
+      if (tx.personName && db.contacts) {
+        const contact = db.contacts.find(c => c.name.trim() === tx.personName.trim());
+        if (contact) {
+          if (tx.type === "expense" && !tx.isNonCash) {
+            const unpaidAmt = Math.max(0, tx.amount - getTxPaidAmount(tx));
+            if (unpaidAmt > 0) {
+              contact.balance = (contact.balance || 0) - unpaidAmt;
+            }
+          } else if (tx.type === "income" && contact.role === "pre_buyer") {
+            contact.balance = (contact.balance || 0) + tx.amount;
+          }
+        }
+      }
       
       // Delete from pre-sales triggers recalculation
       db.transactions.splice(idx, 1);
@@ -1291,6 +1444,20 @@ app.post("/api/transactions/delete", (req, res) => {
     res.status(500).json({ error: "خطا در حذف تراکنش: " + err.message });
   }
 });
+
+// Helper to recalculate weighted average price of a material from its "in" transactions
+function recalculateMaterialAveragePrice(db: DatabaseSchema, mat: Material) {
+  const inTxs = (db.materialTransactions || []).filter(mt => mt.materialId === mat.id && mt.type === "in");
+  if (inTxs.length > 0) {
+    const totalQty = inTxs.reduce((s, t) => s + Number(t.quantity || 0), 0);
+    const totalVal = inTxs.reduce((s, t) => s + (Number(t.quantity || 0) * Number(t.unitPrice || 0)), 0);
+    if (totalQty > 0) {
+      mat.averagePrice = Math.round(totalVal / totalQty);
+    }
+  } else if (mat.purchasePrice) {
+    mat.averagePrice = mat.purchasePrice;
+  }
+}
 
 // 7. Add Material or Warehouse Transaction
 app.post("/api/materials", (req, res) => {
@@ -1322,7 +1489,7 @@ app.post("/api/materials", (req, res) => {
       type: req.body.type, // in / out
       quantity: Number(req.body.quantity || 0),
       unitPrice: Number(req.body.unitPrice || 0),
-      date: req.body.date || "1403/01/01",
+      date: req.body.date || getTodayShamsiServer(),
       personName: req.body.personName || "انباردار",
       description: req.body.description || ""
     };
@@ -1341,6 +1508,7 @@ app.post("/api/materials", (req, res) => {
 
     if (existingIdx >= 0) {
       db.materialTransactions[existingIdx] = tx;
+      if (mat) recalculateMaterialAveragePrice(db, mat);
     } else {
       db.materialTransactions.push(tx);
     }
@@ -1390,14 +1558,15 @@ app.post("/api/materials/delete", (req, res) => {
         const tx = db.materialTransactions[idx];
         // Revert material stocks
         const mat = db.materials.find(m => m.id === tx.materialId);
+        db.materialTransactions.splice(idx, 1);
         if (mat) {
           if (tx.type === "in") {
             mat.stock = Math.max(0, mat.stock - tx.quantity);
+            recalculateMaterialAveragePrice(db, mat);
           } else {
             mat.stock += tx.quantity;
           }
         }
-        db.materialTransactions.splice(idx, 1);
         writeDb(db);
         res.json({ status: "success", message: "تراکنش انبار با موفقیت حذف شد" });
       } else {
@@ -1510,6 +1679,24 @@ app.post("/api/checks/delete", (req, res) => {
     const { id } = req.body;
     const idx = db.checks.findIndex(ch => ch.id === id);
     if (idx >= 0) {
+      const check = db.checks[idx];
+      // If check was already cleared/passed, revert its bank balance impact and remove auto-generated transaction
+      if (check.status === "passed") {
+        const txIdx = db.transactions.findIndex(t =>
+          t.category === "پاس شدن چک" &&
+          t.amount === check.amount &&
+          t.description.includes(check.checkNumber)
+        );
+        if (txIdx >= 0) {
+          const tx = db.transactions[txIdx];
+          const acc = db.accounts.find(a => a.id === tx.accountId);
+          if (acc) {
+            if (tx.type === "expense") acc.balance += tx.amount;
+            else acc.balance -= tx.amount;
+          }
+          db.transactions.splice(txIdx, 1);
+        }
+      }
       db.checks.splice(idx, 1);
       writeDb(db);
       res.json({ status: "success", message: "چک با موفقیت حذف شد" });
@@ -1528,72 +1715,109 @@ app.post("/api/units", (req, res) => {
 
   const idx = db.units.findIndex(u => u.id === unitId);
   if (idx >= 0) {
+    const unitCompanyId = getProjectCompanyId(db, db.units[idx].projectId);
     // If we're adding a specific expense to this unit
     if (req.body.addExpense) {
       const expenseItem = {
         id: "se_" + Date.now(),
         title: req.body.addExpense.title,
         amount: Number(req.body.addExpense.amount),
-        date: req.body.addExpense.date || "1403/01/01"
+        date: req.body.addExpense.date || getTodayShamsiServer()
       };
       db.units[idx].specificExpenses.push(expenseItem);
 
+      const accountId = req.body.addExpense.accountId || "a2";
       // Also log as an expense in transaction logs
       const tx: Transaction = {
         id: "t_unit_exp_" + Date.now(),
-        companyId: "c1",
+        companyId: unitCompanyId,
         projectId: db.units[idx].projectId,
         type: "expense",
         category: "هزینه اختصاصی واحد " + db.units[idx].unitNumber,
         amount: expenseItem.amount,
-        accountId: "a2", // bank account default
+        accountId,
         personName: db.units[idx].buyerName || "کارفرما",
         date: expenseItem.date,
         description: `هزینه ساخت سفارشی برای واحد ${db.units[idx].unitNumber}: ${expenseItem.title}`,
-        isNonCash: false
+        isNonCash: false,
+        paymentStatus: "paid",
+        payments: [{
+          id: "p_uexp_" + Date.now(),
+          amount: expenseItem.amount,
+          date: expenseItem.date,
+          accountId,
+          description: expenseItem.title
+        }]
       };
+      const acc = db.accounts.find(a => a.id === accountId);
+      if (acc) {
+        acc.balance -= expenseItem.amount;
+      }
       db.transactions.push(tx);
     } else {
+      const prevStatus = db.units[idx].status;
       // General update of unit status/pre-sales/barter
-      const updatedUnit = { ...db.units[idx], ...req.body };
+      const updatedUnit = {
+        ...db.units[idx],
+        ...req.body,
+        area: req.body.area !== undefined ? Number(req.body.area) : db.units[idx].area,
+        pricePerMeter: req.body.pricePerMeter !== undefined ? Number(req.body.pricePerMeter) : db.units[idx].pricePerMeter,
+        totalPrice: (req.body.area !== undefined ? Number(req.body.area) : db.units[idx].area) * (req.body.pricePerMeter !== undefined ? Number(req.body.pricePerMeter) : db.units[idx].pricePerMeter)
+      };
       db.units[idx] = updatedUnit;
 
-      // If unit status changed to sold / pre_sold, register an income transaction!
-      if (req.body.status === "pre_sold" || req.body.status === "sold") {
-        const tx: Transaction = {
-          id: "t_sale_" + Date.now(),
-          companyId: "c1",
-          projectId: db.units[idx].projectId,
-          type: "income",
-          category: req.body.status === "pre_sold" ? "پیش‌فروش" : "فروش واحد",
-          amount: Number(req.body.downPayment || 0),
-          accountId: "a1", // default account
-          personName: req.body.buyerName || "خریدار واحد",
-          date: "1403/01/01",
-          description: `پیش‌دریافت بابت فروش واحد شماره ${db.units[idx].unitNumber} به مساحت ${db.units[idx].area} مترمربع`,
-          isNonCash: false
-        };
-        db.transactions.push(tx);
-      } else if (req.body.status === "bartered") {
-        const tx: Transaction = {
-          id: "t_barter_" + Date.now(),
-          companyId: "c1",
-          projectId: db.units[idx].projectId,
-          type: "income",
-          category: "تهاتر",
-          amount: Number(db.units[idx].totalPrice),
-          accountId: "a1",
-          personName: req.body.buyerName || "طرف تهاتر",
-          date: "1403/01/01",
-          description: `تهاتر کامل واحد شماره ${db.units[idx].unitNumber} بابت: ${req.body.barterProperty}`,
-          isNonCash: true,
-          barterDetails: {
-            propertyType: "ملک/تهاتر",
-            description: req.body.barterProperty || "",
-            agreedValue: db.units[idx].totalPrice
+      // Only register sale/barter transaction if status newly changed to pre_sold/sold/bartered
+      if (prevStatus !== req.body.status) {
+        if ((req.body.status === "pre_sold" || req.body.status === "sold") && Number(req.body.downPayment || 0) > 0) {
+          const downPayment = Number(req.body.downPayment || 0);
+          const accountId = req.body.accountId || "a1";
+          const txDate = req.body.date || getTodayShamsiServer();
+          const tx: Transaction = {
+            id: "t_sale_" + Date.now(),
+            companyId: unitCompanyId,
+            projectId: db.units[idx].projectId,
+            type: "income",
+            category: req.body.status === "pre_sold" ? "پیش‌فروش" : "فروش واحد",
+            amount: downPayment,
+            accountId,
+            personName: req.body.buyerName || "خریدار واحد",
+            date: txDate,
+            description: `پیش‌دریافت بابت فروش واحد شماره ${db.units[idx].unitNumber} به مساحت ${db.units[idx].area} مترمربع`,
+            isNonCash: false,
+            paymentStatus: "paid",
+            payments: [{
+              id: "p_sale_" + Date.now(),
+              amount: downPayment,
+              date: txDate,
+              accountId
+            }]
+          };
+          const acc = db.accounts.find(a => a.id === accountId);
+          if (acc) {
+            acc.balance += downPayment;
           }
-        };
-        db.transactions.push(tx);
+          db.transactions.push(tx);
+        } else if (req.body.status === "bartered") {
+          const tx: Transaction = {
+            id: "t_barter_" + Date.now(),
+            companyId: unitCompanyId,
+            projectId: db.units[idx].projectId,
+            type: "income",
+            category: "تهاتر",
+            amount: Number(db.units[idx].totalPrice),
+            accountId: "a1",
+            personName: req.body.buyerName || "طرف تهاتر",
+            date: req.body.date || getTodayShamsiServer(),
+            description: `تهاتر کامل واحد شماره ${db.units[idx].unitNumber} بابت: ${req.body.barterProperty || "تهاتر مصالح/خدمات"}`,
+            isNonCash: true,
+            barterDetails: {
+              propertyType: "ملک/تهاتر",
+              description: req.body.barterProperty || "",
+              agreedValue: db.units[idx].totalPrice
+            }
+          };
+          db.transactions.push(tx);
+        }
       }
     }
 
@@ -1653,41 +1877,20 @@ app.post("/api/projects/delete", (req, res) => {
   if (!db.projects) db.projects = [];
   const idx = db.projects.findIndex(p => p.id === id);
   if (idx >= 0) {
+    // Soft-delete the project and its units so that restoring the project preserves all financial history and balances
     db.projects[idx].isDeleted = true;
     db.projects[idx].deletedAt = new Date().toISOString();
-    
-    // Cascade delete associated transactions
-    db.transactions = db.transactions.filter(t => t.projectId !== id);
-    
-    // Cascade delete associated checks
-    db.checks = db.checks.filter(ch => ch.projectId !== id);
-    
-    // Cascade delete units
     if (db.units) {
-      db.units = db.units.filter(u => u.projectId !== id);
-    }
-    
-    // Cascade delete material transactions
-    if (db.materialTransactions) {
-      db.materialTransactions = db.materialTransactions.filter(mt => mt.projectId !== id);
-    }
-    
-    // Cascade delete preSales
-    if (db.preSales) {
-      db.preSales = db.preSales.filter(ps => ps.projectId !== id);
-    }
-    
-    // Cascade delete imprest funds & expenses
-    if (db.imprestFunds) {
-      const deletedImprestIds = db.imprestFunds.filter(imp => imp.projectId === id).map(imp => imp.id);
-      db.imprestFunds = db.imprestFunds.filter(imp => imp.projectId !== id);
-      if (db.imprestExpenses) {
-        db.imprestExpenses = db.imprestExpenses.filter(ie => !deletedImprestIds.includes(ie.imprestId));
-      }
+      db.units.forEach(u => {
+        if (u.projectId === id) {
+          u.isDeleted = true;
+          u.deletedAt = new Date().toISOString();
+        }
+      });
     }
   }
   writeDb(db);
-  res.json({ status: "success", message: "پروژه به همراه کلیه تراکنش‌ها، واحدها و اسناد وابسته به آن حذف گردید" });
+  res.json({ status: "success", message: "پروژه به سطل زباله منتقل شد و در صورت نیاز قابل بازیابی است" });
 });
 
 app.post("/api/projects/restore", (req, res) => {
@@ -1697,6 +1900,13 @@ app.post("/api/projects/restore", (req, res) => {
   const idx = db.projects.findIndex(p => p.id === id);
   if (idx >= 0) {
     db.projects[idx].isDeleted = false;
+    if (db.units) {
+      db.units.forEach(u => {
+        if (u.projectId === id) {
+          u.isDeleted = false;
+        }
+      });
+    }
   }
   writeDb(db);
   res.json({ status: "success" });
@@ -1746,6 +1956,7 @@ app.post("/api/contacts", (req, res) => {
   const db = readDb();
   const contact = req.body;
   const id = contact.id || "co_" + Date.now();
+  const todayShamsi = getTodayShamsiServer();
 
   const newContact: Contact = {
     id,
@@ -1762,7 +1973,7 @@ app.post("/api/contacts", (req, res) => {
     paymentMethod: contact.paymentMethod || "cash",
     barterUnits: contact.barterUnits || [],
     balance: Number(contact.balance || 0),
-    createdAt: contact.createdAt || "1403/04/03",
+    createdAt: contact.createdAt || todayShamsi,
     projectId: contact.projectId
   };
 
@@ -1783,7 +1994,7 @@ app.post("/api/contacts", (req, res) => {
           contractArea: Number(bu.area || 0),
           pricePerMeter: Number(bu.price || 0),
           totalPrice: totalP,
-          contractDate: newContact.createdAt || "1403/04/03",
+          contractDate: newContact.createdAt || todayShamsi,
           status: "active"
         };
         db.preSales.push(newPreSale);
@@ -1802,7 +2013,7 @@ app.post("/api/contacts", (req, res) => {
           id: "inst_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
           preSaleId: preSaleId,
           installmentName: "مبلغ کل تهاتر واحد مسکونی",
-          dueDate: newContact.createdAt || "1403/04/03",
+          dueDate: newContact.createdAt || todayShamsi,
           amount: totalP,
           isPaid: false
         });
@@ -1837,6 +2048,7 @@ app.post("/api/contacts/delete", (req, res) => {
     // 2. Clear preSales and update corresponding units
     if (db.preSales) {
       const psIds = db.preSales.filter((ps: any) => ps.contactId === id).map((ps: any) => ps.id);
+      const unitIdsToFree = db.preSales.filter((ps: any) => ps.contactId === id).map((ps: any) => ps.unitId);
       db.preSales = db.preSales.filter((ps: any) => ps.contactId !== id);
       
       // Clear installments
@@ -1847,11 +2059,12 @@ app.post("/api/contacts/delete", (req, res) => {
       // Update units status back to 'available' and remove buyerName
       if (db.units) {
         db.units.forEach((u: any) => {
-          if (psIds.includes(u.id) || u.buyerName) {
+          if (unitIdsToFree.includes(u.id)) {
             const isPreSold = db.preSales.some((ps: any) => ps.unitId === u.id);
-            if (!isPreSold && u.status !== 'available') {
-              u.status = 'available';
+            if (!isPreSold && u.status !== "available") {
+              u.status = "available";
               u.buyerName = undefined;
+              u.downPayment = undefined;
             }
           }
         });
@@ -1925,19 +2138,26 @@ app.post("/api/imprests", (req, res) => {
   const db = readDb();
   const fund = req.body;
   const id = fund.id || "im_" + Date.now();
+  const todayShamsi = getTodayShamsiServer();
+  const idx = db.imprestFunds.findIndex(f => f.id === id);
+
+  let computedBalance = Number(fund.balance !== undefined ? fund.balance : fund.allocatedLimit || 0);
+  if (idx >= 0 && fund.balance === undefined && fund.allocatedLimit !== undefined) {
+    const diff = Number(fund.allocatedLimit) - db.imprestFunds[idx].allocatedLimit;
+    computedBalance = Math.max(0, db.imprestFunds[idx].balance + diff);
+  }
 
   const newFund: ImprestFund = {
     id,
     projectId: fund.projectId,
     contactId: fund.contactId,
     allocatedLimit: Number(fund.allocatedLimit || 0),
-    balance: Number(fund.balance || fund.allocatedLimit || 0),
+    balance: computedBalance,
     status: fund.status || "active",
-    lastReconciliationDate: fund.lastReconciliationDate || "1403/04/03",
-    createdAt: fund.createdAt || "1403/04/03"
+    lastReconciliationDate: fund.lastReconciliationDate || todayShamsi,
+    createdAt: fund.createdAt || (idx >= 0 ? db.imprestFunds[idx].createdAt : todayShamsi)
   };
 
-  const idx = db.imprestFunds.findIndex(f => f.id === id);
   if (idx >= 0) {
     db.imprestFunds[idx] = newFund;
   } else {
@@ -1953,6 +2173,7 @@ app.post("/api/imprests/expenses", (req, res) => {
   const db = readDb();
   const exp = req.body;
   const id = exp.id || "ie_" + Date.now();
+  const todayShamsi = getTodayShamsiServer();
 
   // Find associated fund
   const fundIdx = db.imprestFunds.findIndex(f => f.id === exp.imprestId);
@@ -1981,13 +2202,13 @@ app.post("/api/imprests/expenses", (req, res) => {
   const newExpense: ImprestExpense = {
     id,
     imprestId: exp.imprestId,
-    expenseDate: exp.expenseDate || "1403/04/03",
+    expenseDate: exp.expenseDate || todayShamsi,
     amount,
     description: exp.description,
     materialCategory: exp.materialCategory || "سایر",
     attachmentUrl: exp.attachmentUrl,
     status: exp.status || "approved",
-    createdAt: "1403/04/03",
+    createdAt: todayShamsi,
     contactId: exp.contactId,
     personName: exp.personName,
     stage: exp.stage,
@@ -1998,11 +2219,11 @@ app.post("/api/imprests/expenses", (req, res) => {
   };
 
   if (paidAmount > 0) {
-    newExpense.payments.push({
+    newExpense.payments!.push({
       id: "p_" + Date.now(),
       amount: paidAmount,
       date: newExpense.expenseDate,
-      accountId: fund.contactId,
+      accountId: "a3",
       referenceNumber: exp.referenceNumber || "تسویه تنخواه",
       description: "ثبت پرداخت فاکتور از صندوق تنخواه"
     });
@@ -2021,16 +2242,18 @@ app.post("/api/imprests/expenses", (req, res) => {
 
   // Also record a standard transaction in the company ledger!
   const supervisorContact = db.contacts.find(c => c.id === fund.contactId);
-  const ledgerTxId = "t_im_exp_" + Date.now();
+  const ledgerTxId = "t_im_exp_" + id;
+  const imprestAccId = "a3";
   const tx: Transaction = {
     id: ledgerTxId,
-    companyId: "c1",
+    companyId: getProjectCompanyId(db, fund.projectId),
     projectId: fund.projectId,
     type: "expense",
     category: "هزینه تنخواه",
     subCategory: `${newExpense.materialCategory} - ${newExpense.stage || "عمومی"}`,
     amount: newExpense.amount,
-    accountId: "a3", // default to Akbari imprest account
+    accountId: imprestAccId,
+    contactId: exp.contactId,
     personName: newExpense.personName || (supervisorContact ? supervisorContact.name : "تنخواه‌دار"),
     date: newExpense.expenseDate,
     description: `[هزینه تنخواه‌گردان] ${newExpense.description}`,
@@ -2041,6 +2264,14 @@ app.post("/api/imprests/expenses", (req, res) => {
     payments: newExpense.payments || []
   };
   db.transactions.push(tx);
+
+  // Update the imprest account balance in db.accounts to stay synced
+  if (paidAmount > 0) {
+    const acc = db.accounts.find(a => a.id === imprestAccId);
+    if (acc) {
+      acc.balance -= paidAmount;
+    }
+  }
 
   writeDb(db);
   res.json({ status: "success", imprestExpense: newExpense, imprestFund: fund });
@@ -2074,15 +2305,40 @@ app.post("/api/imprests/expenses/delete", (req, res) => {
     const idx = db.imprestExpenses.findIndex(ie => ie.id === id);
     if (idx >= 0) {
       const expense = db.imprestExpenses[idx];
-      // Refund the imprest fund balance if it was paid
+      const paidAmount = expense.payments ? expense.payments.reduce((sum, p) => sum + p.amount, 0) : (expense.paymentStatus === "paid" ? expense.amount : 0);
+      const remainingUnpaid = Math.max(0, expense.amount - paidAmount);
+
+      // 1. Refund the imprest fund balance if it was paid
       const fund = db.imprestFunds.find(f => f.id === expense.imprestId);
       if (fund) {
-        const paidAmount = expense.payments ? expense.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
         fund.balance += paidAmount;
       }
+
+      // 2. Revert vendor contact balance if it had an unpaid portion
+      if (remainingUnpaid > 0 && expense.contactId) {
+        const contact = db.contacts.find(c => c.id === expense.contactId);
+        if (contact) {
+          contact.balance = Math.max(0, (contact.balance || 0) - remainingUnpaid);
+        }
+      }
+
+      // 3. Delete corresponding ledger transaction and refund account balance
+      const txIdx = db.transactions.findIndex(t =>
+        t.id === "t_im_exp_" + id ||
+        (t.category === "هزینه تنخواه" && t.amount === expense.amount && t.description.includes(expense.description))
+      );
+      if (txIdx >= 0) {
+        const tx = db.transactions[txIdx];
+        const acc = db.accounts.find(a => a.id === tx.accountId);
+        if (acc && paidAmount > 0) {
+          acc.balance += paidAmount;
+        }
+        db.transactions.splice(txIdx, 1);
+      }
+
       db.imprestExpenses.splice(idx, 1);
       writeDb(db);
-      res.json({ status: "success", message: "هزینه تنخواه با موفقیت حذف شد" });
+      res.json({ status: "success", message: "هزینه تنخواه و سند مالی متناظر با موفقیت حذف شد" });
     } else {
       res.status(404).json({ error: "هزینه تنخواه یافت نشد" });
     }
@@ -2123,7 +2379,7 @@ app.post("/api/imprests/expenses/pay", (req, res) => {
     id: "p_" + Date.now(),
     amount: payVal,
     date: date || expense.expenseDate,
-    accountId: fund.contactId,
+    accountId: "a3",
     referenceNumber: referenceNumber || "",
     description: description || ""
   };
@@ -2148,10 +2404,17 @@ app.post("/api/imprests/expenses/pay", (req, res) => {
   }
 
   // Synchronize with the corresponding ledger transaction if found
-  const matchedTxIdx = db.transactions.findIndex(t => t.description && t.description.includes(expense.description) && t.amount === expense.amount);
+  const matchedTxIdx = db.transactions.findIndex(t =>
+    t.id === "t_im_exp_" + expense.id ||
+    (t.description && t.description.includes(expense.description) && t.amount === expense.amount)
+  );
   if (matchedTxIdx >= 0) {
     db.transactions[matchedTxIdx].payments = expense.payments;
     db.transactions[matchedTxIdx].paymentStatus = expense.paymentStatus;
+    const acc = db.accounts.find(a => a.id === db.transactions[matchedTxIdx].accountId);
+    if (acc) {
+      acc.balance -= payVal;
+    }
   }
 
   writeDb(db);
@@ -2163,6 +2426,8 @@ app.post("/api/presales", (req, res) => {
   const db = readDb();
   const presale = req.body;
   const id = "ps_" + Date.now();
+  const contractDate = presale.contractDate || getTodayShamsiServer();
+  const totalPrice = Math.round(Number(presale.totalPrice || (Number(presale.contractArea) * Number(presale.pricePerMeter))));
 
   const newPreSale: PreSale = {
     id,
@@ -2171,8 +2436,8 @@ app.post("/api/presales", (req, res) => {
     unitId: presale.unitId,
     contractArea: Number(presale.contractArea),
     pricePerMeter: Number(presale.pricePerMeter),
-    totalPrice: Number(presale.totalPrice || (presale.contractArea * presale.pricePerMeter)),
-    contractDate: presale.contractDate || "1403/04/03",
+    totalPrice,
+    contractDate,
     status: "active"
   };
 
@@ -2181,45 +2446,69 @@ app.post("/api/presales", (req, res) => {
   // Update associated unit status
   const unitIdx = db.units.findIndex(u => u.id === presale.unitId);
   const buyer = db.contacts.find(c => c.id === presale.contactId);
+  const downPaymentAmount = Math.round(totalPrice * 0.30);
   if (unitIdx >= 0) {
     db.units[unitIdx].status = "pre_sold";
     db.units[unitIdx].buyerName = buyer ? buyer.name : "پیش‌خریدار";
-    db.units[unitIdx].downPayment = Math.round(newPreSale.totalPrice * 0.30); // 30% contract downpayment
+    db.units[unitIdx].downPayment = downPaymentAmount; // 30% contract downpayment
   }
 
-  // Generate 7-stage standard installment schedule
+  // Generate 7-stage standard installment schedule summing to 100% of totalPrice
+  const inst1 = downPaymentAmount; // 30%
+  const inst2 = Math.round(totalPrice * 0.10); // 10%
+  const inst3 = Math.round(totalPrice * 0.15); // 15%
+  const inst4 = Math.round(totalPrice * 0.15); // 15%
+  const inst5 = Math.round(totalPrice * 0.10); // 10%
+  const inst6 = Math.round(totalPrice * 0.10); // 10%
+  const inst7 = Math.max(0, totalPrice - (inst1 + inst2 + inst3 + inst4 + inst5 + inst6)); // 10% exact remainder
+
   const installments: PreSaleInstallment[] = [
-    { id: "psi_1_" + Date.now(), preSaleId: id, installmentName: "پیش‌پرداخت (عقد قرارداد)", dueDate: newPreSale.contractDate, amount: Math.round(newPreSale.totalPrice * 0.30), isPaid: false },
-    { id: "psi_2_" + Date.now(), preSaleId: id, installmentName: "پایان پی‌ریزی و فونداسیون", dueDate: "1403/06/15", amount: Math.round(newPreSale.totalPrice * 0.10), isPaid: false },
-    { id: "psi_3_" + Date.now(), preSaleId: id, installmentName: "پایان اسکلت و سازه", dueDate: "1403/09/01", amount: Math.round(newPreSale.totalPrice * 0.15), isPaid: false },
-    { id: "psi_4_" + Date.now(), preSaleId: id, installmentName: "پایان سفت‌کاری و دیوارچینی", dueDate: "1403/11/15", amount: Math.round(newPreSale.totalPrice * 0.15), isPaid: false },
-    { id: "psi_5_" + Date.now(), preSaleId: id, installmentName: "پایان نازک‌کاری و نصبیات", dueDate: "1404/02/20", amount: Math.round(newPreSale.totalPrice * 0.10), isPaid: false },
-    { id: "psi_6_" + Date.now(), preSaleId: id, installmentName: "تحویل فیزیکی واحد مسکونی", dueDate: "1404/04/01", amount: Math.round(newPreSale.totalPrice * 0.05), isPaid: false },
-    { id: "psi_7_" + Date.now(), preSaleId: id, installmentName: "تنظیم سند رسمی انتقال در دفترخانه", dueDate: "1404/06/10", amount: Math.round(newPreSale.totalPrice * 0.10), isPaid: false }
+    { id: "psi_1_" + Date.now(), preSaleId: id, installmentName: "پیش‌پرداخت (عقد قرارداد)", dueDate: contractDate, amount: inst1, isPaid: false },
+    { id: "psi_2_" + Date.now(), preSaleId: id, installmentName: "پایان پی‌ریزی و فونداسیون", dueDate: addShamsiMonths(contractDate, 2), amount: inst2, isPaid: false },
+    { id: "psi_3_" + Date.now(), preSaleId: id, installmentName: "پایان اسکلت و سازه", dueDate: addShamsiMonths(contractDate, 5), amount: inst3, isPaid: false },
+    { id: "psi_4_" + Date.now(), preSaleId: id, installmentName: "پایان سفت‌کاری و دیوارچینی", dueDate: addShamsiMonths(contractDate, 8), amount: inst4, isPaid: false },
+    { id: "psi_5_" + Date.now(), preSaleId: id, installmentName: "پایان نازک‌کاری و نصبیات", dueDate: addShamsiMonths(contractDate, 11), amount: inst5, isPaid: false },
+    { id: "psi_6_" + Date.now(), preSaleId: id, installmentName: "تحویل فیزیکی واحد مسکونی", dueDate: addShamsiMonths(contractDate, 13), amount: inst6, isPaid: false },
+    { id: "psi_7_" + Date.now(), preSaleId: id, installmentName: "تنظیم سند رسمی انتقال در دفترخانه", dueDate: addShamsiMonths(contractDate, 15), amount: inst7, isPaid: false }
   ];
 
   db.preSaleInstallments.push(...installments);
 
+  const downAccountId = presale.accountId || "a1";
   // Also record downpayment transaction
   const tx: Transaction = {
     id: "t_ps_down_" + Date.now(),
-    companyId: "c1",
+    companyId: getProjectCompanyId(db, newPreSale.projectId),
     projectId: newPreSale.projectId,
     type: "income",
     category: "پیش‌فروش",
-    amount: Math.round(newPreSale.totalPrice * 0.30),
-    accountId: "a1", // Bank Melli default
+    amount: downPaymentAmount,
+    accountId: downAccountId,
+    contactId: presale.contactId,
     personName: buyer ? buyer.name : "پیش‌خریدار",
-    date: newPreSale.contractDate,
+    date: contractDate,
     description: `پیش‌دریافت پیش‌پرداخت قرارداد پیش‌فروش واحد شماره ${db.units[unitIdx]?.unitNumber || ""}`,
     isNonCash: false,
-    preSaleId: id
+    preSaleId: id,
+    paymentStatus: "paid",
+    payments: [{
+      id: "p_ps_down_" + Date.now(),
+      amount: downPaymentAmount,
+      date: contractDate,
+      accountId: downAccountId
+    }]
   };
   db.transactions.push(tx);
 
-  // Update buyer contact balance (balance increases by the contract price owed, or similar)
+  // Add downpayment to bank account balance
+  const acc = db.accounts.find(a => a.id === downAccountId);
+  if (acc) {
+    acc.balance += downPaymentAmount;
+  }
+
+  // Update buyer contact balance (remaining unpaid contract amount)
   if (buyer) {
-    buyer.balance = (buyer.balance || 0) + newPreSale.totalPrice - Math.round(newPreSale.totalPrice * 0.30);
+    buyer.balance = (buyer.balance || 0) + (totalPrice - downPaymentAmount);
   }
 
   // Recalculate installments so downpayment registers immediately
@@ -2238,22 +2527,42 @@ app.post("/api/presales/delete", (req, res) => {
     if (idx >= 0) {
       const presale = db.preSales[idx];
       
-      // Revert associated unit status
+      // 1. Revert associated unit status
       const unitIdx = db.units.findIndex(u => u.id === presale.unitId);
       if (unitIdx >= 0) {
         db.units[unitIdx].status = "available";
         delete db.units[unitIdx].buyerName;
         delete db.units[unitIdx].downPayment;
       }
+
+      // 2. Revert all transactions associated with this preSale and deduct from bank accounts
+      const relatedTxs = db.transactions.filter(t => t.preSaleId === id);
+      const totalPaidOnPreSale = relatedTxs.reduce((sum, t) => sum + t.amount, 0);
+      relatedTxs.forEach(t => {
+        if (!t.isNonCash) {
+          const acc = db.accounts.find(a => a.id === t.accountId);
+          if (acc) {
+            acc.balance -= t.amount;
+          }
+        }
+      });
+      db.transactions = db.transactions.filter(t => t.preSaleId !== id);
+
+      // 3. Revert buyer remaining balance
+      const buyer = db.contacts.find(c => c.id === presale.contactId);
+      if (buyer) {
+        const remainingDebtOnContract = Math.max(0, presale.totalPrice - totalPaidOnPreSale);
+        buyer.balance = Math.max(0, (buyer.balance || 0) - remainingDebtOnContract);
+      }
       
-      // Remove installments
+      // 4. Remove installments
       db.preSaleInstallments = db.preSaleInstallments.filter(psi => psi.preSaleId !== id);
       
-      // Delete presale
+      // 5. Delete presale
       db.preSales.splice(idx, 1);
       
       writeDb(db);
-      res.json({ status: "success", message: "قرارداد پیش‌فروش با موفقیت حذف شد" });
+      res.json({ status: "success", message: "قرارداد پیش‌فروش و تراکنش‌های مرتبط با موفقیت حذف شد" });
     } else {
       res.status(404).json({ error: "قرارداد پیش‌فروش یافت نشد" });
     }
@@ -2290,6 +2599,15 @@ app.post("/api/presales/update-area", (req, res) => {
     }
 
     const diffAmount = preSale.totalPrice - prevTotalPrice;
+
+    // Also update the unit's area in db.units if exactArea is provided
+    if (hasExactArea && preSale.exactArea) {
+      const unitIdx = db.units.findIndex(u => u.id === preSale.unitId);
+      if (unitIdx >= 0) {
+        db.units[unitIdx].area = preSale.exactArea;
+        db.units[unitIdx].totalPrice = preSale.totalPrice;
+      }
+    }
 
     // Adjust installments
     const installments = db.preSaleInstallments.filter(i => i.preSaleId === id);
@@ -2340,28 +2658,42 @@ app.post("/api/presales/installments/pay", (req, res) => {
     return res.status(400).json({ error: "این قسط قبلاً پرداخت شده است" });
   }
 
+  const remainingToPay = Math.max(0, inst.amount - (inst.paidAmount || 0));
+  const payAmount = remainingToPay > 0 ? remainingToPay : inst.amount;
+
   inst.isPaid = true;
-  inst.paidDate = paidDate || "1403/04/03";
+  inst.paidAmount = inst.amount;
+  inst.paidDate = paidDate || getTodayShamsiServer();
 
   // Find associated pre-sale & buyer
   const presale = db.preSales.find(p => p.id === inst.preSaleId);
   if (presale) {
     const buyer = db.contacts.find(c => c.id === presale.contactId);
     const unit = db.units.find(u => u.id === presale.unitId);
+    const targetAccId = accountId || "a1";
     
-    // Register transaction
+    // Register transaction with preSaleId so recalculatePreSaleInstallments recognizes it
     const tx: Transaction = {
       id: "t_ps_inst_" + Date.now(),
-      companyId: "c1",
+      companyId: getProjectCompanyId(db, presale.projectId),
       projectId: presale.projectId,
       type: "income",
       category: "پیش‌فروش",
-      amount: inst.amount,
-      accountId: accountId || "a1",
+      amount: payAmount,
+      accountId: targetAccId,
+      contactId: presale.contactId,
       personName: buyer ? buyer.name : "پیش‌خریدار",
       date: inst.paidDate,
       description: `دریافت قسط "${inst.installmentName}" قرارداد پیش‌فروش واحد ${unit ? unit.unitNumber : ""}`,
-      isNonCash: false
+      isNonCash: false,
+      preSaleId: presale.id,
+      paymentStatus: "paid",
+      payments: [{
+        id: "p_psi_" + Date.now(),
+        amount: payAmount,
+        date: inst.paidDate,
+        accountId: targetAccId
+      }]
     };
     db.transactions.push(tx);
 
@@ -2373,8 +2705,10 @@ app.post("/api/presales/installments/pay", (req, res) => {
 
     // Update buyer contact balance
     if (buyer) {
-      buyer.balance = Math.max(0, buyer.balance - inst.amount);
+      buyer.balance = Math.max(0, (buyer.balance || 0) - payAmount);
     }
+
+    recalculatePreSaleInstallments(db, presale.id);
   }
 
   writeDb(db);
@@ -2519,29 +2853,40 @@ app.post("/api/presales/payments/add", (req, res) => {
     return res.status(400).json({ error: "حساب مالی مشخص شده یافت نشد" });
   }
 
+  const payVal = Number(amount);
   // Register transaction
   const tx: Transaction = {
     id: "t_ps_pay_" + Date.now(),
-    companyId: "c1",
+    companyId: getProjectCompanyId(db, preSale.projectId),
     projectId: preSale.projectId,
     type: "income",
     category: "پیش‌فروش",
-    amount: Number(amount),
+    amount: payVal,
     accountId,
+    contactId: preSale.contactId,
     personName: buyer ? buyer.name : "پیش‌خریدار",
     date: paidDate,
     description: description || `دریافت پرداختی پیش‌فروش واحد ${unit ? unit.unitNumber : ""} - شماره سند ${referenceNumber || ""}`,
     isNonCash: false,
-    preSaleId
+    preSaleId,
+    paymentStatus: "paid",
+    payments: [{
+      id: "p_psp_" + Date.now(),
+      amount: payVal,
+      date: paidDate,
+      accountId,
+      referenceNumber,
+      description
+    }]
   };
   db.transactions.push(tx);
 
   // Update account balance
-  acc.balance += Number(amount);
+  acc.balance += payVal;
 
   // Update buyer contact balance
   if (buyer) {
-    buyer.balance = Math.max(0, (buyer.balance || 0) - Number(amount));
+    buyer.balance = Math.max(0, (buyer.balance || 0) - payVal);
   }
 
   // Recalculate installments
@@ -2563,13 +2908,90 @@ app.post("/api/alerts", (req, res) => {
     referenceId: alert.referenceId || "",
     recipientPhone: alert.recipientPhone || "",
     message: alert.message || "",
-    sendDate: "1403/04/03",
+    sendDate: getTodayShamsiServer(),
     isSent: true
   };
 
   db.alertsLog.push(newLog);
   writeDb(db);
   res.json({ status: "success", alertLog: newLog });
+});
+
+// 9g-2. Timesheets & Payrolls Endpoints
+app.post("/api/timesheets", (req, res) => {
+  const db = readDb();
+  if (!db.timesheets) db.timesheets = [];
+  const item: TimesheetItem = {
+    id: req.body.id || "ts_" + Date.now(),
+    projectId: req.body.projectId,
+    contactId: req.body.contactId,
+    personName: req.body.personName,
+    date: req.body.date || getTodayShamsiServer(),
+    hoursWorked: Number(req.body.hoursWorked || 0),
+    overtimeHours: Number(req.body.overtimeHours || 0),
+    dailyRate: Number(req.body.dailyRate || 0),
+    overtimeRate: Number(req.body.overtimeRate || 0),
+    totalPay: Number(req.body.totalPay || 0),
+    stage: req.body.stage || "سفت‌کاری",
+    description: req.body.description || "",
+    isPaid: !!req.body.isPaid
+  };
+  const idx = db.timesheets.findIndex(t => t.id === item.id);
+  if (idx >= 0) db.timesheets[idx] = item;
+  else db.timesheets.push(item);
+  writeDb(db);
+  res.json({ status: "success", timesheet: item });
+});
+
+app.post("/api/timesheets/delete", (req, res) => {
+  const db = readDb();
+  if (!db.timesheets) db.timesheets = [];
+  db.timesheets = db.timesheets.filter(t => t.id !== req.body.id);
+  writeDb(db);
+  res.json({ status: "success" });
+});
+
+app.post("/api/payrolls", (req, res) => {
+  const db = readDb();
+  if (!db.payrolls) db.payrolls = [];
+  const item: PayrollItem = {
+    id: req.body.id || "pr_" + Date.now(),
+    projectId: req.body.projectId,
+    contactId: req.body.contactId,
+    personName: req.body.personName,
+    month: req.body.month,
+    year: req.body.year,
+    baseSalary: Number(req.body.baseSalary || 0),
+    housingAllowance: Number(req.body.housingAllowance || 0),
+    foodAllowance: Number(req.body.foodAllowance || 0),
+    childAllowance: Number(req.body.childAllowance || 0),
+    overtimeHours: Number(req.body.overtimeHours || 0),
+    overtimePay: Number(req.body.overtimePay || 0),
+    bonuses: Number(req.body.bonuses || 0),
+    insuranceWorker: Number(req.body.insuranceWorker || 0),
+    insuranceEmployer: Number(req.body.insuranceEmployer || 0),
+    taxDeduction: Number(req.body.taxDeduction || 0),
+    advanceDeduction: Number(req.body.advanceDeduction || 0),
+    otherDeductions: Number(req.body.otherDeductions || 0),
+    grossSalary: Number(req.body.grossSalary || 0),
+    netPayable: Number(req.body.netPayable || 0),
+    paymentDate: req.body.paymentDate || getTodayShamsiServer(),
+    accountId: req.body.accountId || "a1",
+    isPaid: !!req.body.isPaid
+  };
+  const idx = db.payrolls.findIndex(p => p.id === item.id);
+  if (idx >= 0) db.payrolls[idx] = item;
+  else db.payrolls.push(item);
+  writeDb(db);
+  res.json({ status: "success", payroll: item });
+});
+
+app.post("/api/payrolls/delete", (req, res) => {
+  const db = readDb();
+  if (!db.payrolls) db.payrolls = [];
+  db.payrolls = db.payrolls.filter(p => p.id !== req.body.id);
+  writeDb(db);
+  res.json({ status: "success" });
 });
 
 // 9h. Settings Management

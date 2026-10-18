@@ -19,6 +19,38 @@ function camelToSnake(str) {
   return str.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 }
 
+function getTodayShamsiWorker() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US-u-ca-persian", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === "year")?.value || "1404";
+    const m = parts.find(p => p.type === "month")?.value || "01";
+    const d = parts.find(p => p.type === "day")?.value || "01";
+    return `${y}/${m.padStart(2, "0")}/${d.padStart(2, "0")}`;
+  } catch {
+    return "1404/01/01";
+  }
+}
+
+function addShamsiMonthsWorker(shamsiDate, monthsToAdd) {
+  const parts = (shamsiDate || getTodayShamsiWorker()).split("/").map(Number);
+  if (parts.length !== 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) {
+    return getTodayShamsiWorker();
+  }
+  let [y, m, d] = parts;
+  m += monthsToAdd;
+  while (m > 12) {
+    m -= 12;
+    y += 1;
+  }
+  if (m > 6 && d > 30) d = 30;
+  if (m === 12 && d > 29) d = 29;
+  return `${y}/${String(m).padStart(2, "0")}/${String(d).padStart(2, "0")}`;
+}
+
 // Backblaze B2 Upload Helper
 async function uploadBase64ToB2(base64DataUrl, fileName, env, headers) {
   const keyId = headers.get("x-b2-key-id") || env.B2_APPLICATION_KEY_ID;
@@ -878,37 +910,34 @@ export default {
         return new Response(JSON.stringify({ status: "success", message: "شرکت با موفقیت حذف شد." }), { headers: corsHeaders });
       }
 
-      // Delete Project
+      // Delete Project (Soft Delete)
       if (path === "/api/projects/delete" && method === "POST") {
         const body = await request.json();
         const { id } = body;
         const now = new Date().toISOString();
 
-        // Soft delete project
+        // Soft delete project and its units so restore preserves accounting history
         await env.DB.prepare("UPDATE projects SET is_deleted = 1, deleted_at = ? WHERE id = ?").bind(now, id).run();
+        await env.DB.prepare("UPDATE units SET is_deleted = 1, deleted_at = ? WHERE project_id = ?").bind(now, id).run();
 
-        // Cascade deletes matching server.ts:
-        // 1. Cascade delete associated transactions
-        await env.DB.prepare("DELETE FROM transactions WHERE project_id = ?").bind(id).run();
-        // 2. Cascade delete associated checks
-        await env.DB.prepare("DELETE FROM checks WHERE project_id = ?").bind(id).run();
-        // 3. Cascade delete units
-        await env.DB.prepare("DELETE FROM units WHERE project_id = ?").bind(id).run();
-        // 4. Cascade delete material transactions
-        await env.DB.prepare("DELETE FROM material_transactions WHERE project_id = ?").bind(id).run();
-        // 5. Cascade delete preSales
-        await env.DB.prepare("DELETE FROM pre_sales WHERE project_id = ?").bind(id).run();
-        // 6. Cascade delete imprest funds & expenses
-        const { results: imprestFunds } = await env.DB.prepare("SELECT id FROM imprest_funds WHERE project_id = ?").bind(id).all();
-        const imprestIds = (imprestFunds || []).map(imp => imp.id);
-        if (imprestIds.length > 0) {
-          await env.DB.prepare("DELETE FROM imprest_funds WHERE project_id = ?").bind(id).run();
-          for (const impId of imprestIds) {
-            await env.DB.prepare("DELETE FROM imprest_expenses WHERE imprest_id = ?").bind(impId).run();
-          }
-        }
+        return new Response(JSON.stringify({ status: "success", message: "پروژه به سطل زباله منتقل شد و در صورت نیاز قابل بازیابی است" }), { headers: corsHeaders });
+      }
 
-        return new Response(JSON.stringify({ status: "success", message: "پروژه به همراه کلیه تراکنش‌ها، واحدها و اسناد وابسته به آن حذف گردید" }), { headers: corsHeaders });
+      // Restore Project
+      if (path === "/api/projects/restore" && method === "POST") {
+        const body = await request.json();
+        const { id } = body;
+        await env.DB.prepare("UPDATE projects SET is_deleted = 0 WHERE id = ?").bind(id).run();
+        await env.DB.prepare("UPDATE units SET is_deleted = 0 WHERE project_id = ?").bind(id).run();
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
+      }
+
+      // Restore Unit
+      if (path === "/api/units/restore" && method === "POST") {
+        const body = await request.json();
+        const { id } = body;
+        await env.DB.prepare("UPDATE units SET is_deleted = 0 WHERE id = ?").bind(id).run();
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
       }
 
       // Delete Account
@@ -1330,17 +1359,22 @@ export default {
       if (path === "/api/accounts" && method === "POST") {
         const acc = await request.json();
         const accId = acc.id || "a_" + Date.now();
+        const nature = acc.nature || (acc.type === "investor" ? "creditor" : "debtor");
 
         await env.DB.prepare(`
-          INSERT INTO accounts (id, name, type, type_name, account_number, bank_name, balance)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO accounts (id, name, type, type_name, account_number, bank_name, balance, code, level, parent_code, nature)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             name=excluded.name,
             type=excluded.type,
             type_name=excluded.type_name,
             account_number=excluded.account_number,
             bank_name=excluded.bank_name,
-            balance=excluded.balance
+            balance=excluded.balance,
+            code=COALESCE(excluded.code, accounts.code),
+            level=COALESCE(excluded.level, accounts.level),
+            parent_code=COALESCE(excluded.parent_code, accounts.parent_code),
+            nature=COALESCE(excluded.nature, accounts.nature)
         `).bind(
           accId,
           acc.name,
@@ -1348,7 +1382,11 @@ export default {
           acc.typeName || "حساب",
           acc.accountNumber || null,
           acc.bankName || null,
-          Number(acc.balance || 0)
+          Number(acc.balance || 0),
+          acc.code || null,
+          acc.level !== undefined ? Number(acc.level) : 3,
+          acc.parentCode || null,
+          nature
         ).run();
 
         return new Response(JSON.stringify({ status: "success", id: accId }), { headers: corsHeaders });
@@ -1616,6 +1654,7 @@ export default {
       if (path === "/api/contacts" && method === "POST") {
         const c = await request.json();
         const id = c.id || "co_" + Date.now();
+        const todayShamsi = getTodayShamsiWorker();
         await env.DB.prepare(`
           INSERT INTO contacts (id, name, phone, role, national_id, bank_card_number, balance, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1634,7 +1673,7 @@ export default {
           c.nationalId || null,
           c.bankCardNumber || null,
           Number(c.balance || 0),
-          c.createdAt || "1403/04/03"
+          c.createdAt || todayShamsi
         ).run();
 
         return new Response(JSON.stringify({ status: "success", contact: { id, ...c } }), { headers: corsHeaders });
@@ -1644,6 +1683,7 @@ export default {
       if (path === "/api/imprests" && method === "POST") {
         const f = await request.json();
         const id = f.id || "im_" + Date.now();
+        const todayShamsi = getTodayShamsiWorker();
         await env.DB.prepare(`
           INSERT INTO imprest_funds (id, project_id, contact_id, allocated_limit, balance, status, last_reconciliation_date, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1659,8 +1699,8 @@ export default {
           Number(f.allocatedLimit || 0),
           Number(f.balance !== undefined ? f.balance : (f.allocatedLimit || 0)),
           f.status || "active",
-          f.lastReconciliationDate || "1403/04/03",
-          f.createdAt || "1403/04/03"
+          f.lastReconciliationDate || todayShamsi,
+          f.createdAt || todayShamsi
         ).run();
 
         return new Response(JSON.stringify({ status: "success", imprestFund: { id, ...f } }), { headers: corsHeaders });
@@ -1670,6 +1710,7 @@ export default {
       if (path === "/api/imprests/expenses" && method === "POST") {
         const exp = await request.json();
         const id = exp.id || "ie_" + Date.now();
+        const todayShamsi = getTodayShamsiWorker();
 
         // Check if fund exists and is not locked
         const fund = await env.DB.prepare("SELECT * FROM imprest_funds WHERE id = ?").bind(exp.imprestId).first();
@@ -1689,13 +1730,13 @@ export default {
         `).bind(
           id,
           exp.imprestId,
-          exp.expenseDate || "1403/04/03",
+          exp.expenseDate || todayShamsi,
           expAmount,
           exp.description,
           exp.materialCategory || "سایر",
           exp.attachmentUrl || null,
           exp.status || "approved",
-          "1403/04/03"
+          todayShamsi
         ).run();
 
         if ((exp.status || "approved") === "approved") {
@@ -1707,7 +1748,7 @@ export default {
           const contact = await env.DB.prepare("SELECT * FROM contacts WHERE id = ?").bind(fund.contact_id).first();
 
           // Log in main transactions ledger
-          const txId = "t_im_exp_" + Date.now();
+          const txId = "t_im_exp_" + id;
           await env.DB.prepare(`
             INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, is_non_cash, attachment_name)
             VALUES (?, 'c1', ?, 'expense', 'هزینه تنخواه', ?, ?, 'a3', ?, ?, ?, 0, ?)
@@ -1717,10 +1758,12 @@ export default {
             exp.materialCategory || "سایر",
             expAmount,
             contact ? contact.name : "تنخواه‌دار",
-            exp.expenseDate || "1403/04/03",
+            exp.expenseDate || todayShamsi,
             `[هزینه تنخواه‌گردان] ${exp.description}`,
             exp.attachmentName || null
           ).run();
+
+          await env.DB.prepare("UPDATE accounts SET balance = balance - ? WHERE id = 'a3'").bind(expAmount).run();
         }
 
         return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
@@ -1730,7 +1773,8 @@ export default {
       if (path === "/api/presales" && method === "POST") {
         const presale = await request.json();
         const id = "ps_" + Date.now();
-        const totalPrice = Number(presale.totalPrice || (presale.contractArea * presale.pricePerMeter));
+        const contractDate = presale.contractDate || getTodayShamsiWorker();
+        const totalPrice = Math.round(Number(presale.totalPrice || (presale.contractArea * presale.pricePerMeter)));
         const downPayment = Math.round(totalPrice * 0.30);
 
         // 1. Save Pre-sale
@@ -1745,7 +1789,7 @@ export default {
           Number(presale.contractArea),
           Number(presale.pricePerMeter),
           totalPrice,
-          presale.contractDate || "1403/04/03"
+          contractDate
         ).run();
 
         // 2. Update associated unit status
@@ -1756,16 +1800,24 @@ export default {
           UPDATE units SET status = 'pre_sold', buyer_name = ?, down_payment = ? WHERE id = ?
         `).bind(buyerName, downPayment, presale.unitId).run();
 
-        // 3. Generate 7-stage standard installment schedule
+        // 3. Generate 7-stage standard installment schedule summing to 100% of totalPrice
         const currentMs = Date.now();
+        const inst1 = downPayment;
+        const inst2 = Math.round(totalPrice * 0.10);
+        const inst3 = Math.round(totalPrice * 0.15);
+        const inst4 = Math.round(totalPrice * 0.15);
+        const inst5 = Math.round(totalPrice * 0.10);
+        const inst6 = Math.round(totalPrice * 0.10);
+        const inst7 = Math.max(0, totalPrice - (inst1 + inst2 + inst3 + inst4 + inst5 + inst6));
+
         const installments = [
-          { name: "پیش‌پرداخت (عقد قرارداد)", dueDate: presale.contractDate, amount: downPayment, isPaid: 1, paidDate: presale.contractDate },
-          { name: "پایان پی‌ریزی و فونداسیون", dueDate: "1403/06/15", amount: Math.round(totalPrice * 0.10), isPaid: 0, paidDate: null },
-          { name: "پایان اسکلت و سازه", dueDate: "1403/09/01", amount: Math.round(totalPrice * 0.15), isPaid: 0, paidDate: null },
-          { name: "پایان سفت‌کاری و دیوارچینی", dueDate: "1403/11/15", amount: Math.round(totalPrice * 0.15), isPaid: 0, paidDate: null },
-          { name: "پایان نازک‌کاری و نصبیات", dueDate: "1404/02/20", amount: Math.round(totalPrice * 0.10), isPaid: 0, paidDate: null },
-          { name: "تحویل فیزیکی واحد مسکونی", dueDate: "1404/04/01", amount: Math.round(totalPrice * 0.05), isPaid: 0, paidDate: null },
-          { name: "تنظیم سند رسمی انتقال در دفترخانه", dueDate: "1404/06/10", amount: Math.round(totalPrice * 0.10), isPaid: 0, paidDate: null }
+          { name: "پیش‌پرداخت (عقد قرارداد)", dueDate: contractDate, amount: inst1, isPaid: 1, paidDate: contractDate },
+          { name: "پایان پی‌ریزی و فونداسیون", dueDate: addShamsiMonthsWorker(contractDate, 2), amount: inst2, isPaid: 0, paidDate: null },
+          { name: "پایان اسکلت و سازه", dueDate: addShamsiMonthsWorker(contractDate, 5), amount: inst3, isPaid: 0, paidDate: null },
+          { name: "پایان سفت‌کاری و دیوارچینی", dueDate: addShamsiMonthsWorker(contractDate, 8), amount: inst4, isPaid: 0, paidDate: null },
+          { name: "پایان نازک‌کاری و نصبیات", dueDate: addShamsiMonthsWorker(contractDate, 11), amount: inst5, isPaid: 0, paidDate: null },
+          { name: "تحویل فیزیکی واحد مسکونی", dueDate: addShamsiMonthsWorker(contractDate, 13), amount: inst6, isPaid: 0, paidDate: null },
+          { name: "تنظیم سند رسمی انتقال در دفترخانه", dueDate: addShamsiMonthsWorker(contractDate, 15), amount: inst7, isPaid: 0, paidDate: null }
         ];
 
         for (let i = 0; i < installments.length; i++) {
@@ -1785,7 +1837,7 @@ export default {
           ).run();
         }
 
-        // 4. Log downpayment transaction
+        // 4. Log downpayment transaction and add to bank account balance
         const txId = "t_ps_down_" + currentMs;
         await env.DB.prepare(`
           INSERT INTO transactions (id, company_id, project_id, type, category, amount, account_id, person_name, date, description, is_non_cash)
@@ -1795,8 +1847,10 @@ export default {
           presale.projectId,
           downPayment,
           buyerName,
-          presale.contractDate || "1403/04/03"
+          contractDate
         ).run();
+
+        await env.DB.prepare("UPDATE accounts SET balance = balance + ? WHERE id = 'a1'").bind(downPayment).run();
 
         // 5. Update buyer contact balance
         if (buyer) {
@@ -1820,7 +1874,7 @@ export default {
           return new Response(JSON.stringify({ error: "این قسط قبلاً پرداخت شده است" }), { status: 400, headers: corsHeaders });
         }
 
-        const datePaid = paidDate || "1403/04/03";
+        const datePaid = paidDate || getTodayShamsiWorker();
 
         // Mark paid
         await env.DB.prepare("UPDATE pre_sale_installments SET is_paid = 1, paid_date = ? WHERE id = ?")
@@ -1870,16 +1924,18 @@ export default {
       if (path === "/api/alerts" && method === "POST") {
         const alert = await request.json();
         const id = "al_" + Date.now();
+        const todayShamsi = getTodayShamsiWorker();
 
         await env.DB.prepare(`
           INSERT INTO alerts_log (id, type, reference_id, recipient_phone, message, send_date, is_sent)
-          VALUES (?, ?, ?, ?, ?, '1403/04/03', 1)
+          VALUES (?, ?, ?, ?, ?, ?, 1)
         `).bind(
           id,
           alert.type || "installment",
           alert.referenceId || "",
           alert.recipientPhone || "",
-          alert.message || ""
+          alert.message || "",
+          todayShamsi
         ).run();
 
         return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });

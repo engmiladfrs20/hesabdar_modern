@@ -247,6 +247,28 @@ export interface UnitItem {
   deletedAt?: string;
 }
 
+export interface TimesheetItem {
+  id: string;
+  projectId: string;
+  contactId: string;
+  date: string;
+  hoursWorked: number;
+  dailyRate: number;
+  totalAmount: number;
+  description: string;
+}
+
+export interface PayrollItem {
+  id: string;
+  projectId: string;
+  contactId: string;
+  amount: number;
+  paymentDate: string;
+  accountId: string;
+  description: string;
+  transactionId?: string;
+}
+
 export interface DatabaseSchema {
   companies: Company[];
   projects: Project[];
@@ -263,5 +285,8 @@ export interface DatabaseSchema {
   preSales: PreSale[];
   preSaleInstallments: PreSaleInstallment[];
   alertsLog: AlertLog[];
+  timesheets?: TimesheetItem[];
+  payrolls?: PayrollItem[];
 }
+
 

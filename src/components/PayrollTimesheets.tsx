@@ -1,47 +1,29 @@
-import React, { useState } from "react";
-import { DatabaseSchema, Project, Contact, Account } from "../types";
+import React, { useState, useEffect } from "react";
+import { DatabaseSchema, Project, Contact, Account, TimesheetItem, PayrollItem } from "../types";
 import { Plus, Users, Calendar, Coins, CheckCircle, RefreshCw, Briefcase, FileText, Landmark, Clock, Trash } from "lucide-react";
 import { motion } from "motion/react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import { getTodayShamsiString } from "../utils/shamsi";
 
 interface PayrollTimesheetsProps {
   db: DatabaseSchema;
+  activeCompanyId?: string;
   getApiUrl: (endpoint: string) => string;
   onRefresh: () => Promise<void>;
   projects: Project[];
 }
 
-interface LocalTimesheet {
-  id: string;
-  projectId: string;
-  contactId: string;
-  date: string;
-  hoursWorked: number;
-  dailyRate: number;
-  totalAmount: number;
-  description: string;
-}
-
-interface LocalPayroll {
-  id: string;
-  projectId: string;
-  contactId: string;
-  amount: number;
-  paymentDate: string;
-  accountId: string;
-  description: string;
-}
-
-export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }: PayrollTimesheetsProps) {
+export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRefresh, projects }: PayrollTimesheetsProps) {
   const [subTab, setSubTab] = useState<"timesheet" | "payroll">("timesheet");
   const [isSyncing, setIsSyncing] = useState(false);
 
   // Filter contacts to subcontractors/workers or other active parties
-  const workers = db.contacts.filter(c => c.role === "subcontractor" || c.role === "imprest_holder" || c.role === "admin");
+  const workers = db.contacts.filter(c => c.role === "subcontractor" || c.role === "imprest_holder" || c.role === "admin" || c.role === "supplier");
 
-  // Local state persistence for timesheets and payroll logs to ensure immediate persistence
-  const [timesheets, setTimesheets] = useState<LocalTimesheet[]>(() => {
+  // Sync state with db.timesheets & db.payrolls (with localStorage fallback)
+  const [timesheets, setTimesheets] = useState<TimesheetItem[]>(() => {
+    if (db.timesheets && db.timesheets.length > 0) return db.timesheets;
     const saved = localStorage.getItem("ns_timesheets");
     if (saved) return JSON.parse(saved);
     return [
@@ -50,18 +32,30 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
     ];
   });
 
-  const [payrolls, setPayrolls] = useState<LocalPayroll[]>(() => {
+  const [payrolls, setPayrolls] = useState<PayrollItem[]>(() => {
+    if (db.payrolls && db.payrolls.length > 0) return db.payrolls;
     const saved = localStorage.getItem("ns_payrolls");
     if (saved) return JSON.parse(saved);
     return [
-      { id: "pr1", projectId: "p1", contactId: "co3", amount: 1200000000, paymentDate: "1403/02/18", accountId: "a3", description: "پرداخت قسط اول دستمزد آرماتوربندی قاسمی" }
+      { id: "pr1", projectId: "p1", contactId: "co3", amount: 1200000000, paymentDate: "1403/02/18", accountId: "a3", description: "پرداخت قسط اول دستمزد آرماتوربندی قاسمی", transactionId: "t2" }
     ];
   });
+
+  useEffect(() => {
+    if (db.timesheets) {
+      setTimesheets(db.timesheets);
+      localStorage.setItem("ns_timesheets", JSON.stringify(db.timesheets));
+    }
+    if (db.payrolls) {
+      setPayrolls(db.payrolls);
+      localStorage.setItem("ns_payrolls", JSON.stringify(db.payrolls));
+    }
+  }, [db.timesheets, db.payrolls]);
 
   // Form States - Timesheet
   const [tsProjectId, setTsProjectId] = useState(projects[0]?.id || "");
   const [tsContactId, setTsContactId] = useState(workers[0]?.id || "");
-  const [tsDate, setTsDate] = useState("1403/04/05");
+  const [tsDate, setTsDate] = useState(() => getTodayShamsiString());
   const [tsHours, setTsHours] = useState("");
   const [tsRate, setTsRate] = useState("");
   const [tsDesc, setTsDesc] = useState("");
@@ -70,7 +64,7 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
   const [prProjectId, setPrProjectId] = useState(projects[0]?.id || "");
   const [prContactId, setPrContactId] = useState(workers[0]?.id || "");
   const [prAmount, setPrAmount] = useState("");
-  const [prDate, setPrDate] = useState("1403/04/05");
+  const [prDate, setPrDate] = useState(() => getTodayShamsiString());
   const [prAccountId, setPrAccountId] = useState(db.accounts[0]?.id || "");
   const [prDesc, setPrDesc] = useState("");
 
@@ -83,17 +77,17 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
     return String(str).replace(/[0-9]/g, (w) => farsiDigits[parseInt(w)]);
   };
 
-  const saveTimesheets = (list: LocalTimesheet[]) => {
+  const saveTimesheets = (list: TimesheetItem[]) => {
     localStorage.setItem("ns_timesheets", JSON.stringify(list));
     setTimesheets(list);
   };
 
-  const savePayrolls = (list: LocalPayroll[]) => {
+  const savePayrolls = (list: PayrollItem[]) => {
     localStorage.setItem("ns_payrolls", JSON.stringify(list));
     setPayrolls(list);
   };
 
-  const handleAddTimesheet = (e: React.FormEvent) => {
+  const handleAddTimesheet = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!tsProjectId || !tsContactId || !tsHours || !tsRate) return;
 
@@ -101,25 +95,59 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
     const rate = Number(tsRate);
     const total = hours * rate;
 
-    const newTs: LocalTimesheet = {
+    const newTs: TimesheetItem = {
       id: "ts_" + Date.now(),
       projectId: tsProjectId,
       contactId: tsContactId,
-      date: tsDate,
+      date: tsDate || getTodayShamsiString(),
       hoursWorked: hours,
       dailyRate: rate,
       totalAmount: total,
       description: tsDesc || "ثبت کارکرد روزانه"
     };
 
-    saveTimesheets([newTs, ...timesheets]);
+    setIsSyncing(true);
+    try {
+      const response = await fetch(getApiUrl("/api/timesheets"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newTs)
+      });
+      if (response.ok) {
+        await onRefresh();
+      } else {
+        saveTimesheets([newTs, ...timesheets]);
+      }
+    } catch {
+      saveTimesheets([newTs, ...timesheets]);
+    } finally {
+      setIsSyncing(false);
+    }
+
     setTsHours("");
     setTsRate("");
     setTsDesc("");
+    setTsDate(getTodayShamsiString());
   };
 
-  const handleDeleteTimesheet = (id: string) => {
-    saveTimesheets(timesheets.filter(t => t.id !== id));
+  const handleDeleteTimesheet = async (id: string) => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch(getApiUrl("/api/timesheets/delete"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id })
+      });
+      if (response.ok) {
+        await onRefresh();
+      } else {
+        saveTimesheets(timesheets.filter(t => t.id !== id));
+      }
+    } catch {
+      saveTimesheets(timesheets.filter(t => t.id !== id));
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleAddPayroll = async (e: React.FormEvent) => {
@@ -128,27 +156,23 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
 
     setIsSyncing(true);
     const amount = Number(prAmount);
-
     const targetProject = projects.find(p => p.id === prProjectId);
     const targetContact = workers.find(c => c.id === prContactId);
-    const targetAccount = db.accounts.find(a => a.id === prAccountId);
 
     try {
-      // 1. Process Core Financial Ledger transaction API
-      const response = await fetch(getApiUrl("/api/transactions"), {
+      const response = await fetch(getApiUrl("/api/payrolls"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: prProjectId,
-          type: "expense",
-          category: "دستمزد",
-          subCategory: targetProject?.currentStage || "سایر",
-          amount: amount,
-          accountId: prAccountId,
+          companyId: targetProject?.companyId || "c1",
+          contactId: prContactId,
           personName: targetContact ? targetContact.name : "پیمانکار کارگاه",
-          date: prDate,
-          description: prDesc || `پرداخت حقوق/کارکرد به ${targetContact?.name}`,
-          isNonCash: false
+          stage: targetProject?.currentStage || "سایر",
+          amount: amount,
+          paymentDate: prDate || getTodayShamsiString(),
+          accountId: prAccountId,
+          description: prDesc || `پرداخت حقوق/کارکرد به ${targetContact?.name || "پیمانکار"}`
         })
       });
 
@@ -156,22 +180,10 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
         throw new Error("خطا در ثبت سند مالی حقوق");
       }
 
-      // 2. Add locally
-      const newPr: LocalPayroll = {
-        id: "pr_" + Date.now(),
-        projectId: prProjectId,
-        contactId: prContactId,
-        amount: amount,
-        paymentDate: prDate,
-        accountId: prAccountId,
-        description: prDesc || `تسویه حساب حقوق و دستمزد`
-      };
-
-      savePayrolls([newPr, ...payrolls]);
       setPrAmount("");
       setPrDesc("");
+      setPrDate(getTodayShamsiString());
 
-      // 3. Trigger reload of core DB state to update bank balances
       await onRefresh();
     } catch (err) {
       console.error("Error creating payroll transaction:", err);
@@ -181,8 +193,24 @@ export default function PayrollTimesheets({ db, getApiUrl, onRefresh, projects }
     }
   };
 
-  const handleDeletePayroll = (id: string) => {
-    savePayrolls(payrolls.filter(p => p.id !== id));
+  const handleDeletePayroll = async (id: string) => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch(getApiUrl("/api/payrolls/delete"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id })
+      });
+      if (response.ok) {
+        await onRefresh();
+      } else {
+        savePayrolls(payrolls.filter(p => p.id !== id));
+      }
+    } catch {
+      savePayrolls(payrolls.filter(p => p.id !== id));
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   return (

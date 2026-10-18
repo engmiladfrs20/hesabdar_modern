@@ -181,61 +181,171 @@ export default function AccountingReports({ db, projects, onAddContact, onAddPro
     };
   });
 
-  // 2. Trial Balance calculation
+  // 2. Trial Balance calculation (Accurate opening balance + period turnover = final balance)
   const trialBalanceAccounts = db.accounts.map(acc => {
-    // Calculate total debits/credits from transactions
-    const txs = filteredTransactions.filter(t => t.accountId === acc.id);
+    const nature = acc.nature || (acc.type === "investor" ? "creditor" : "debtor");
+    // Only non-cash (barter) transactions don't affect bank/cash account balances
+    const allAccTxs = db.transactions.filter(t => !t.isDeleted && !t.isNonCash && (
+      (t.payments && t.payments.length > 0)
+        ? t.payments.some(p => p.accountId === acc.id)
+        : (t.paymentStatus !== "unpaid" && t.accountId === acc.id)
+    ));
+
+    // Calculate net effect of all historical transactions on this account to derive opening balance
+    let netTxEffect = 0;
+    allAccTxs.forEach(t => {
+      let amt = 0;
+      if (t.payments && t.payments.length > 0) {
+        amt = t.payments.filter(p => p.accountId === acc.id).reduce((s, p) => s + p.amount, 0);
+      } else {
+        amt = t.amount;
+      }
+      if (t.type === "income") netTxEffect += amt;
+      else netTxEffect -= amt;
+    });
+
+    const openingBalance = acc.balance - netTxEffect;
+
+    // Now calculate debits and credits from filteredTransactions
     let debits = 0;
     let credits = 0;
 
-    txs.forEach(t => {
-      if (t.type === "income") {
-        if (acc.nature === "debtor") debits += t.amount;
-        else credits += t.amount;
-      } else {
-        if (acc.nature === "debtor") credits += t.amount;
-        else debits += t.amount;
+    if (nature === "debtor") {
+      if (openingBalance >= 0) debits += openingBalance;
+      else credits += Math.abs(openingBalance);
+    } else {
+      if (openingBalance >= 0) credits += openingBalance;
+      else debits += Math.abs(openingBalance);
+    }
+
+    filteredTransactions.filter(t => !t.isDeleted && !t.isNonCash).forEach(t => {
+      let amt = 0;
+      if (t.payments && t.payments.length > 0) {
+        amt = t.payments.filter(p => p.accountId === acc.id).reduce((s, p) => s + p.amount, 0);
+      } else if (t.paymentStatus !== "unpaid" && t.accountId === acc.id) {
+        amt = t.amount;
+      }
+      if (amt > 0) {
+        if (t.type === "income") {
+          debits += amt;
+        } else {
+          credits += amt;
+        }
       }
     });
 
-    // Seed initial balance to debits/credits to make it look realistic
-    if (acc.nature === "debtor") {
-      debits += acc.balance;
-    } else {
-      credits += acc.balance;
-    }
+    const finalBalance = nature === "debtor" ? (debits - credits) : (credits - debits);
 
     return {
       ...acc,
+      nature,
+      openingBalance,
       debits,
       credits,
-      finalBalance: acc.balance
+      finalBalance
     };
   });
 
-  // 3. Subsidiary Ledger (معین شخص) with running balance
+  const totalTrialDebits = trialBalanceAccounts.reduce((s, a) => s + a.debits, 0);
+  const totalTrialCredits = trialBalanceAccounts.reduce((s, a) => s + a.credits, 0);
+
+  // 3. Subsidiary Ledger (معین شخص) with accurate chronological running balance
   const activeContact = db.contacts.find(c => c.id === selectedContactId);
-  const contactTransactions = filteredTransactions.filter(t => t.personName === activeContact?.name);
+  const contactTransactions = filteredTransactions.filter(
+    t => !t.isDeleted && activeContact && t.personName.trim() === activeContact.name.trim()
+  );
 
-  let runningBalance = activeContact ? activeContact.balance : 0;
-  const ledgerRows = contactTransactions.map((tx, index) => {
-    const isPaymentToContact = tx.type === "expense"; // e.g. paid subcontractor
-    const amount = tx.amount;
-    
-    // Adjust running balance
-    if (isPaymentToContact) {
-      runningBalance += amount;
-    } else {
-      runningBalance -= amount;
-    }
+  // Build ledger entries including contract/invoice obligations and payments
+  const rawLedgerEvents: {
+    id: string;
+    date: string;
+    description: string;
+    debit: number;
+    credit: number;
+  }[] = [];
 
+  if (activeContact) {
+    // Include PreSale contracts for this contact
+    const contactPreSales = (db.preSales || []).filter(ps => ps.contactId === activeContact.id);
+    contactPreSales.forEach(ps => {
+      const unit = db.units.find(u => u.id === ps.unitId);
+      rawLedgerEvents.push({
+        id: `ps_${ps.id}`,
+        date: ps.contractDate,
+        description: `عقد قرارداد پیش‌فروش / واگذاری واحد ${unit ? unit.unitNumber : ""} (${ps.hasExactArea ? `متراژ دقیق سندی: ${ps.exactArea} متر` : `متراژ قراردادی: ${ps.contractArea} متر`})`,
+        debit: ps.totalPrice, // Buyer owes the project
+        credit: 0
+      });
+    });
+
+    contactTransactions.forEach(tx => {
+      if (tx.type === "income") {
+        // Money received from contact (e.g., pre-buyer paying installment -> contact is credited)
+        rawLedgerEvents.push({
+          id: tx.id,
+          date: tx.date,
+          description: tx.description || `دریافت وجه (${tx.category})`,
+          debit: 0,
+          credit: tx.amount
+        });
+      } else {
+        // Expense transaction with supplier/subcontractor:
+        // First record the invoice/work performed as credit to contact (company owes them)
+        rawLedgerEvents.push({
+          id: `${tx.id}_inv`,
+          date: tx.date,
+          description: `صورت‌وضعیت / فاکتور: ${tx.description} (${tx.category})`,
+          debit: 0,
+          credit: tx.amount
+        });
+
+        // Then record actual settlement(s) paid to them as debit (reducing company's debt to them)
+        if (tx.isNonCash) {
+          rawLedgerEvents.push({
+            id: `${tx.id}_barter`,
+            date: tx.date,
+            description: `تسویه تهاتری: ${tx.barterDetails?.description || tx.description}`,
+            debit: tx.amount,
+            credit: 0
+          });
+        } else if (tx.payments && tx.payments.length > 0) {
+          tx.payments.forEach(p => {
+            rawLedgerEvents.push({
+              id: `${tx.id}_${p.id}`,
+              date: p.date || tx.date,
+              description: `پرداخت وجه بابت: ${tx.description} ${p.referenceNumber ? `(شماره سند: ${p.referenceNumber})` : ""}`,
+              debit: p.amount,
+              credit: 0
+            });
+          });
+        } else if (tx.paymentStatus !== "unpaid") {
+          rawLedgerEvents.push({
+            id: `${tx.id}_pay`,
+            date: tx.date,
+            description: `پرداخت نقدی همزمان با فاکتور: ${tx.description}`,
+            debit: tx.amount,
+            credit: 0
+          });
+        }
+      }
+    });
+  }
+
+  rawLedgerEvents.sort((a, b) => a.date.localeCompare(b.date));
+
+  // Calculate opening balance if contact has a pre-existing balance not covered by events
+  const eventsNetEffect = rawLedgerEvents.reduce((sum, ev) => sum + (ev.debit - ev.credit), 0);
+  const currentContactBalance = activeContact ? activeContact.balance : 0;
+  let runningBalance = currentContactBalance - eventsNetEffect;
+
+  const ledgerRows = rawLedgerEvents.map(ev => {
+    runningBalance += (ev.debit - ev.credit);
     return {
-      id: tx.id,
-      date: tx.date,
-      description: tx.description,
-      type: tx.type,
-      debit: isPaymentToContact ? amount : 0,
-      credit: !isPaymentToContact ? amount : 0,
+      id: ev.id,
+      date: ev.date,
+      description: ev.description,
+      debit: ev.debit,
+      credit: ev.credit,
       balanceAfter: runningBalance
     };
   });
@@ -551,12 +661,22 @@ export default function AccountingReports({ db, projects, onAddContact, onAddPro
                       </td>
                       <td className="py-3 px-3 text-left font-mono">{toFarsiDigits(acc.debits.toLocaleString())}</td>
                       <td className="py-3 px-3 text-left font-mono">{toFarsiDigits(acc.credits.toLocaleString())}</td>
-                      <td className={`py-3 px-3 text-left font-extrabold font-mono ${acc.balance >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                        {toFarsiDigits(Math.abs(acc.balance).toLocaleString())}
+                      <td className={`py-3 px-3 text-left font-extrabold font-mono ${acc.finalBalance >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {toFarsiDigits(Math.abs(acc.finalBalance).toLocaleString())}
                       </td>
                     </tr>
                   ))}
                 </tbody>
+                <tfoot>
+                  <tr className="bg-slate-900 text-white font-bold">
+                    <td colSpan={3} className="py-3 px-3 text-right">جمع کل گردش حساب‌ها (تراز کل):</td>
+                    <td className="py-3 px-3 text-left font-mono text-emerald-400">{toFarsiDigits(totalTrialDebits.toLocaleString())}</td>
+                    <td className="py-3 px-3 text-left font-mono text-amber-400">{toFarsiDigits(totalTrialCredits.toLocaleString())}</td>
+                    <td className="py-3 px-3 text-left font-mono text-white">
+                      {toFarsiDigits(trialBalanceAccounts.reduce((s, a) => s + a.finalBalance, 0).toLocaleString())}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>

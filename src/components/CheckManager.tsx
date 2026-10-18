@@ -4,6 +4,7 @@ import { Clock, Plus, Search, Calendar, CheckSquare, RefreshCw, Landmark, AlertT
 import { motion } from "motion/react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import { getTodayShamsiString } from "../utils/shamsi";
 
 interface CheckManagerProps {
   checks: CheckItem[];
@@ -29,7 +30,7 @@ export default function CheckManager({
   // New Check form state
   const [chkNumber, setChkNumber] = useState("");
   const [chkBank, setChkBank] = useState("");
-  const [chkDueDate, setChkDueDate] = useState("1403/04/15");
+  const [chkDueDate, setChkDueDate] = useState(() => getTodayShamsiString());
   const [chkAmount, setChkAmount] = useState("");
   const [chkType, setChkType] = useState<"incoming" | "outgoing">("outgoing");
   const [chkPerson, setChkPerson] = useState("");
@@ -84,6 +85,7 @@ export default function CheckManager({
     // Reset Form
     setChkNumber("");
     setChkBank("");
+    setChkDueDate(getTodayShamsiString());
     setChkAmount("");
     setChkPerson("");
     setChkDesc("");
@@ -127,7 +129,13 @@ export default function CheckManager({
         </div>
 
         <button 
-          onClick={() => setIsAddingCheck(!isAddingCheck)}
+          onClick={() => {
+            if (!isAddingCheck) {
+              setEditingCheckId(null);
+              setChkDueDate(getTodayShamsiString());
+            }
+            setIsAddingCheck(!isAddingCheck);
+          }}
           className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-1.5 cursor-pointer"
         >
           <Plus className="w-4 h-4" />

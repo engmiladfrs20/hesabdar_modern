@@ -94,6 +94,7 @@ interface AlertLog {
 
 interface Props {
   db: DatabaseSchema;
+  activeCompanyId?: string;
   getApiUrl: (endpoint: string) => string;
   onRefresh: () => Promise<void>;
   projects: Project[];
@@ -171,7 +172,7 @@ interface BarterUnitInput {
   price: string;
 }
 
-export default function ContractsAndImprests({ db, getApiUrl, onRefresh, projects, onDeletePreSale, onDeleteImprest, onDeleteImprestExpense }: Props) {
+export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, onRefresh, projects, onDeletePreSale, onDeleteImprest, onDeleteImprestExpense }: Props) {
   const [subTab, setSubTab] = useState<"contacts" | "imprests" | "presales" | "alerts">("contacts");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -478,6 +479,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          companyId: activeCompanyId || "c1",
           name,
           address: "ثبت سریع از تنخواه",
           totalArea: 0,
@@ -612,6 +614,7 @@ export default function ContractsAndImprests({ db, getApiUrl, onRefresh, project
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          companyId: activeCompanyId || "c1",
           name: projectModalName.trim(),
           address: projectModalAddress.trim() || "ثبت شده از تنخواه",
           totalArea: Number(projectModalArea) || 0,
