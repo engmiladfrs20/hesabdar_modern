@@ -22,7 +22,7 @@ jobs:
         run: npm install
 
       - name: Build Frontend (Vite)
-        run: npm run build # این دستور پوشه dist را تولید می‌کند
+        run: npx vite build # تولید فایل‌های استاتیک فرانت‌اند در پوشه dist برای کلودفلر
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3

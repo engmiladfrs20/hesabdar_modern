@@ -12,7 +12,8 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-const SETTINGS_FILE = path.join(process.cwd(), "settings.json");
+const BASE_DATA_DIR = process.env.USER_DATA_DIR || process.cwd();
+const SETTINGS_FILE = path.join(BASE_DATA_DIR, "settings.json");
 
 interface AppSettings {
   dbPath: string;
@@ -25,25 +26,32 @@ interface AppSettings {
   autoBackupSyncIntervalHours?: number;
   lastAutoBackupTime?: string;
   lastAutoSyncTime?: string;
+  firstInstallSynced?: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  dbPath: path.join(process.cwd(), "db.json"),
-  uploadsPath: path.join(process.cwd(), "uploads"),
+  dbPath: process.env.OFFLINE_DB_PATH || path.join(BASE_DATA_DIR, "db.json"),
+  uploadsPath: path.join(BASE_DATA_DIR, "uploads"),
   cfApiToken: "",
   cfAccountId: "",
-  cfWorkerName: "construction-accounting-worker",
-  cfWorkerUrl: "",
+  cfWorkerName: "hesabdarpeymankar",
+  cfWorkerUrl: "https://hesabdarpeymankar.vikoni4694.workers.dev",
   autoBackupSyncIntervalHours: 0,
   lastAutoBackupTime: "",
-  lastAutoSyncTime: ""
+  lastAutoSyncTime: "",
+  firstInstallSynced: false
 };
 
 function readSettings(): AppSettings {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const data = fs.readFileSync(SETTINGS_FILE, "utf-8");
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
+      const parsed = JSON.parse(data);
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        cfWorkerUrl: parsed.cfWorkerUrl || DEFAULT_SETTINGS.cfWorkerUrl
+      };
     }
   } catch (e) {
     console.error("Error reading settings", e);
@@ -60,8 +68,17 @@ function writeSettings(settings: AppSettings) {
 }
 
 function getDbPath(): string {
+  if (process.env.OFFLINE_DB_PATH) return process.env.OFFLINE_DB_PATH;
   const settings = readSettings();
-  return settings.dbPath || process.env.OFFLINE_DB_PATH || path.join(process.cwd(), "db.json");
+  return settings.dbPath || path.join(BASE_DATA_DIR, "db.json");
+}
+
+function getBackupsDir(): string {
+  const dir = path.join(BASE_DATA_DIR, "backups");
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
 }
 
 // Helper to save base64 to file and return filename
@@ -470,275 +487,25 @@ const SEED_STAGES = [
 ];
 
 const DEFAULT_DB: DatabaseSchema = {
-  companies: [
-    { id: "c1", name: "شرکت عمرانی رادین سازه شیراز", code: "10243" },
-    { id: "c2", name: "پیشگامان مسکن مهرگان", code: "55890" }
-  ],
-  projects: [
-    {
-      id: "p1",
-      companyId: "c1",
-      name: "پروژه مسکونی مروارید نیاوران",
-      address: "تهران، نیاوران، خیابان یاسر، پلاک ۱۲",
-      totalArea: 2400,
-      budget: 48000000000, // ۴۸ میلیارد تومان
-      stages: SEED_STAGES,
-      currentStage: "۱۰. اسکلت بتنی",
-      status: "active"
-    },
-    {
-      id: "p2",
-      companyId: "c1",
-      name: "مجتمع تجاری آرامش سعادت‌آباد",
-      address: "تهران، سعادت‌آباد، میدان کاج، نبش خیابان نهم",
-      totalArea: 5500,
-      budget: 120000000000, // ۱۲۰ میلیارد تومان
-      stages: SEED_STAGES,
-      currentStage: "۸. گودبرداری و پایدارسازی",
-      status: "active"
-    }
-  ],
+  companies: [],
+  projects: [],
   users: [
-    { id: "u1", name: "مهندس میلاد فرخی", role: "manager", roleName: "مدیر ارشد پروژه" },
-    { id: "u2", name: "خانم مریم احمدی", role: "accountant", roleName: "حسابدار مالی" },
-    { id: "u3", name: "حاج علی عباسی", role: "investor", roleName: "سرمایه‌گذار شریک" },
-    { id: "u4", name: "مهندس میلاد فرخی", role: "supervisor", roleName: "مهندس ارشد پروژه" }
+    { id: "u1", name: "مهندس میلاد فرخی", role: "manager", roleName: "مدیر ارشد پروژه" }
   ],
-  accounts: [
-    { id: "a1", name: "بانک ملی - جاری کارفرما (۱۴۰۲)", type: "bank", typeName: "بانک تجاری", accountNumber: "0105432109002", bankName: "ملی ایران", balance: 14200000000, code: "101001", level: 3, parentCode: "101", nature: "debtor" },
-    { id: "a2", name: "بانک سامان - حساب پروژه مروارید", type: "bank", typeName: "بانک تجاری", accountNumber: "820-410-432190-1", bankName: "سامان", balance: 8500000000, code: "101002", level: 3, parentCode: "101", nature: "debtor" },
-    { id: "a3", name: "تنخواه مهندس میلاد فرخی (نیاوران)", type: "petty_cash", typeName: "تنخواه گردان کارگاه", balance: 450000000, code: "101003", level: 3, parentCode: "101", nature: "debtor" },
-    { id: "a4", name: "تنخواه مهندس کریمی (سعادت‌آباد)", type: "petty_cash", typeName: "تنخواه گردان کارگاه", balance: 350000000, code: "101004", level: 3, parentCode: "101", nature: "debtor" },
-    { id: "a5", name: "آورده نقدی حاج علی عباسی", type: "investor", typeName: "حساب شریک/سرمایه‌گذار", balance: 25000000000, code: "301001", level: 3, parentCode: "301", nature: "creditor" },
-    { id: "a6", name: "صندوق مرکزی دفتر مرکزی", type: "cash", typeName: "صندوق نقد دفتر", balance: 120000000, code: "101010", level: 3, parentCode: "101", nature: "debtor" }
-  ],
-  contacts: [
-    { id: "co1", name: "خانم دکتر مهدوی", phone: "09121111111", role: "pre_buyer", nationalId: "0012233445", bankCardNumber: "6037991122334455", balance: 23800000000 },
-    { id: "co2", name: "مهندس شفیعی", phone: "09122222222", role: "pre_buyer", nationalId: "0022233446", bankCardNumber: "6104332211005544", balance: 30400000000 },
-    { id: "co3", name: "شرکت فلزات آریا", phone: "02188888888", role: "subcontractor", nationalId: "10100293810", balance: -8000000000 },
-    { id: "co4", name: "صنایع بتن تهران کادوس", phone: "02144444444", role: "supplier", nationalId: "14002931201", balance: -1800000000 },
-    { id: "co5", name: "مهندس میلاد فرخی", phone: "09123333333", role: "imprest_holder", nationalId: "0033344556", balance: 450000000 },
-    { id: "co6", name: "مهندس کریمی", phone: "09124444444", role: "imprest_holder", nationalId: "0044455667", balance: 350000000 }
-  ],
-  imprestFunds: [
-    { id: "im1", projectId: "p1", contactId: "co5", allocatedLimit: 500000000, balance: 450000000, status: "active", createdAt: "1403/01/10" },
-    { id: "im2", projectId: "p2", contactId: "co6", allocatedLimit: 400000000, balance: 350000000, status: "active", createdAt: "1403/01/12" }
-  ],
-  imprestExpenses: [
-    { id: "ie1", imprestId: "im1", expenseDate: "1403/02/12", amount: 50000000, description: "خرید لوله اتصالات پلیکا فاضلابی کارگاه", materialCategory: "تأسیسات", status: "approved" }
-  ],
-  preSales: [
-    { id: "ps1", projectId: "p1", contactId: "co1", unitId: "u_p1_301", contractArea: 140, pricePerMeter: 170000000, totalPrice: 23800000000, contractDate: "1403/01/20", status: "active" },
-    { id: "ps2", projectId: "p1", contactId: "co2", unitId: "u_p1_402", contractArea: 160, pricePerMeter: 190000000, totalPrice: 30400000000, contractDate: "1403/02/01", status: "active" }
-  ],
-  preSaleInstallments: [
-    { id: "psi1", preSaleId: "ps1", installmentName: "پیش‌پرداخت (عقد قرارداد)", dueDate: "1403/01/20", amount: 8000000000, isPaid: true, paidDate: "1403/01/20" },
-    { id: "psi2", preSaleId: "ps1", installmentName: "پایان پی‌ریزی و فونداسیون", dueDate: "1403/03/10", amount: 2380000000, isPaid: false },
-    { id: "psi3", preSaleId: "ps1", installmentName: "پایان اسکلت و سازه", dueDate: "1403/05/15", amount: 3570000000, isPaid: false },
-    { id: "psi4", preSaleId: "ps2", installmentName: "پیش‌پرداخت (عقد قرارداد)", dueDate: "1403/02/01", amount: 15000000000, isPaid: true, paidDate: "1403/02/01" }
-  ],
+  accounts: [],
+  contacts: [],
+  imprestFunds: [],
+  imprestExpenses: [],
+  preSales: [],
+  preSaleInstallments: [],
   alertsLog: [],
-  materials: [
-    { id: "m1", name: "میلگرد آجدار سایز ۱۶ ذوب آهن", category: "فولاد و آهن‌آلات", unit: "تن", stock: 45, averagePrice: 285000000 },
-    { id: "m2", name: "سیمان پرتلند تیپ ۲ ساوه", category: "سیمان و گچ", unit: "پاکت", stock: 1200, averagePrice: 85000 },
-    { id: "m3", name: "بتن آماده عیار ۳۵۰ استاندارد", category: "بتن و پایدارسازی", unit: "متر مکعب", stock: 0, averagePrice: 1650000 },
-    { id: "m4", name: "بلوک سبک لیکا سایز ۱۵", category: "دیوارچینی", unit: "عدد", stock: 8500, averagePrice: 12500 },
-    { id: "m5", name: "لوله پنج لایه نیوپایپ سایز ۲0", category: "تأسیسات", unit: "متر", stock: 600, averagePrice: 68000 }
-  ],
-  materialTransactions: [
-    { id: "mt1", projectId: "p1", materialId: "m1", type: "in", quantity: 20, unitPrice: 280000000, date: "1403/02/10", personName: "آهن‌آلات برادران رضایی", description: "خرید میلگرد برای اسکلت نیاوران" },
-    { id: "mt2", projectId: "p1", materialId: "m1", type: "out", quantity: 12, unitPrice: 280000000, date: "1403/02/15", personName: "مهندس اکبری", description: "تحویل به کارگاه جهت بافت آرماتور فونداسیون" },
-    { id: "mt3", projectId: "p2", materialId: "m2", type: "in", quantity: 500, unitPrice: 82000, date: "1403/03/01", personName: "مصالح ساختمانی پارس", description: "تأمین سیمان سفت‌کاری پروژه تجاری" },
-    { id: "mt4", projectId: "p2", materialId: "m2", type: "out", quantity: 350, unitPrice: 82000, date: "1403/03/05", personName: "مهندس کریمی", description: "مصرف جهت ملات دیوارچینی طبقه منفی یک" }
-  ],
-  transactions: [
-    {
-      id: "t1",
-      companyId: "c1",
-      projectId: "p1",
-      type: "expense",
-      category: "خرید مصالح",
-      subCategory: "خاک‌برداری و پی‌ریزی",
-      amount: 5600000000, // ۵۶۰ میلیون تومان
-      accountId: "a2",
-      personName: "آهن‌آلات برادران رضایی",
-      date: "1403/02/10",
-      description: "خرید ۲۰ تن میلگرد آجدار سایز ۱۶",
-      isNonCash: false,
-      attachmentName: "factor_milgard_16.pdf",
-      attachmentData: "JVBERi0xLjQKJSDi498gZW50ZXI=" // Simulated PDF content
-    },
-    {
-      id: "t2",
-      companyId: "c1",
-      projectId: "p1",
-      type: "expense",
-      category: "دستمزد",
-      subCategory: "خاک‌برداری و پی‌ریزی",
-      amount: 1200000000,
-      accountId: "a3",
-      personName: "پیمانکار آرماتوربندی استاد قاسمی",
-      date: "1403/02/18",
-      description: "پرداخت قسط اول دستمزد آرماتوربندی فونداسیون",
-      isNonCash: false
-    },
-    {
-      id: "t_ps_down_ps1",
-      companyId: "c1",
-      projectId: "p1",
-      type: "income",
-      category: "پیش‌فروش",
-      amount: 8000000000,
-      accountId: "a1",
-      personName: "خانم دکتر مهدوی",
-      date: "1403/01/20",
-      description: "پیش‌دریافت پیش‌پرداخت قرارداد پیش‌فروش واحد ۳۰۱ مروارید",
-      isNonCash: false,
-      preSaleId: "ps1"
-    },
-    {
-      id: "t3",
-      companyId: "c1",
-      projectId: "p1",
-      type: "income",
-      category: "پیش‌فروش",
-      amount: 15000000000, // ۱.۵ میلیارد تومان
-      accountId: "a2",
-      personName: "مهندس شفیعی (خریدار واحد ۴۰۲)",
-      date: "1403/03/01",
-      description: "دریافت قسط اول پیش‌فروش واحد مسکونی ۴۰۲ نیاوران",
-      isNonCash: false,
-      preSaleId: "ps2"
-    },
-    {
-      id: "t4",
-      companyId: "c1",
-      projectId: "p1",
-      type: "income",
-      category: "آورده",
-      amount: 10000000000, // ۱ میلیارد تومان
-      accountId: "a1",
-      personName: "حاج علی عباسی",
-      date: "1403/01/15",
-      description: "واریز آورده نقدی شریک جهت شروع فاز اسکلت",
-      isNonCash: false
-    },
-    {
-      id: "t5",
-      companyId: "c1",
-      projectId: "p2",
-      type: "expense",
-      category: "تهاتر",
-      amount: 8000000000, // ۸۰۰ میلیون تومان
-      accountId: "a1",
-      personName: "شرکت فلزات آریا",
-      date: "1403/03/20",
-      description: "تهاتر ارزش اسکلت فلزی با واگذاری واحد ۱0۱ تجاری",
-      isNonCash: true,
-      barterDetails: {
-        propertyType: "واحد تجاری شماره ۱۰۱",
-        description: "واگذاری سند موقت پیش‌فروش واحد تجاری به مساحت ۴۵ مترمربع در طبقه همکف",
-        agreedValue: 8000000000
-      }
-    }
-  ],
-  checks: [
-    {
-      id: "ch1",
-      companyId: "c1",
-      projectId: "p1",
-      checkNumber: "4509/821033",
-      bankName: "سامان شعبه نیاوران",
-      dueDate: "1403/04/15",
-      amount: 1800000000,
-      type: "outgoing",
-      status: "pending",
-      personName: "صنایع بتن تهران کادوس",
-      description: "خرید سیمان و بتن آماده عیار ۳۵۰ فونداسیون"
-    },
-    {
-      id: "ch2",
-      companyId: "c1",
-      projectId: "p2",
-      checkNumber: "122/8879410",
-      bankName: "ملی ایران شعبه مرکزی",
-      dueDate: "1403/03/25",
-      amount: 3200000000,
-      type: "outgoing",
-      status: "passed",
-      personName: "مهندس صادقی (پیمانکار اسکلت فلزی)",
-      description: "پرداخت بابت نصب ستون‌های سگمنت پارت اول"
-    },
-    {
-      id: "ch3",
-      companyId: "c1",
-      projectId: "p1",
-      checkNumber: "99041235",
-      bankName: "پاسارگاد شعبه اندرزگو",
-      dueDate: "1403/05/10",
-      amount: 2500000000,
-      type: "incoming",
-      status: "pending",
-      personName: "خانم دکتر مهدوی (خریدار واحد ۳۰۱)",
-      description: "چک سررسید مرحله اتمام سفت‌کاری واحد ۳۰۱"
-    }
-  ],
-  units: [
-    {
-      id: "u_p1_101",
-      projectId: "p1",
-      unitNumber: "۱۰۱",
-      floor: "اول",
-      area: 120,
-      pricePerMeter: 150000000, // ۱۵۰ میلیون تومان
-      totalPrice: 18000000000,
-      status: "available",
-      specificExpenses: [
-        { id: "se1", title: "طراحی کناف اختصاصی سالن", amount: 150000000, date: "1403/02/20" }
-      ]
-    },
-    {
-      id: "u_p1_301",
-      projectId: "p1",
-      unitNumber: "۳۰۱",
-      floor: "سوم",
-      area: 140,
-      pricePerMeter: 170000000,
-      totalPrice: 23800000000,
-      status: "pre_sold",
-      buyerName: "خانم دکتر مهدوی",
-      downPayment: 8000000000,
-      specificExpenses: []
-    },
-    {
-      id: "u_p1_402",
-      projectId: "p1",
-      unitNumber: "۴۰۲",
-      floor: "چهارم",
-      area: 160,
-      pricePerMeter: 190000000,
-      totalPrice: 30400000000,
-      status: "pre_sold",
-      buyerName: "مهندس شفیعی",
-      downPayment: 15000000000,
-      specificExpenses: [
-        { id: "se2", title: "تغییر سیستم گرمایشی به مینی چیلر اختصاصی", amount: 450000000, date: "1403/02/25" }
-      ]
-    },
-    {
-      id: "u_p2_101",
-      projectId: "p2",
-      unitNumber: "۱۰۱ تجاری",
-      floor: "همکف",
-      area: 45,
-      pricePerMeter: 350000000,
-      totalPrice: 15750000000,
-      status: "bartered",
-      buyerName: "شرکت فلزات آریا",
-      barterProperty: "تهاتر با ۸۰ تن سازه اسکلت فلزی کارخانه آریا",
-      specificExpenses: []
-    }
-  ]
+  materials: [],
+  materialTransactions: [],
+  transactions: [],
+  checks: [],
+  units: [],
+  timesheets: [],
+  payrolls: []
 };
 
 // Database helper functions
@@ -838,19 +605,412 @@ function writeDb(data: DatabaseSchema) {
 // Ensure database file is initialized on startup
 readDb();
 
+function getShamsiDateTimeServer() {
+  const shamsiDate = getTodayShamsiServer();
+  let shamsiTime = "00:00:00";
+  try {
+    const now = new Date();
+    const tParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tehran",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).formatToParts(now);
+    const hh = tParts.find(p => p.type === "hour")?.value || String(now.getHours()).padStart(2, "0");
+    const mm = tParts.find(p => p.type === "minute")?.value || String(now.getMinutes()).padStart(2, "0");
+    const ss = tParts.find(p => p.type === "second")?.value || String(now.getSeconds()).padStart(2, "0");
+    shamsiTime = `${hh.padStart(2, "0")}:${mm.padStart(2, "0")}:${ss.padStart(2, "0")}`;
+  } catch {
+    const now = new Date();
+    shamsiTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+  }
+  return {
+    shamsiDate,
+    shamsiTime,
+    versionName: `نسخه ${shamsiDate} - ساعت ${shamsiTime}`
+  };
+}
+
+function getDbStats(db: DatabaseSchema) {
+  return {
+    companies: Array.isArray(db.companies) ? db.companies.length : 0,
+    projects: Array.isArray(db.projects) ? db.projects.filter(p => !p.isDeleted).length : 0,
+    transactions: Array.isArray(db.transactions) ? db.transactions.length : 0,
+    accounts: Array.isArray(db.accounts) ? db.accounts.length : 0,
+    units: Array.isArray(db.units) ? db.units.filter(u => !u.isDeleted).length : 0,
+    contacts: Array.isArray(db.contacts) ? db.contacts.length : 0,
+    preSales: Array.isArray(db.preSales) ? db.preSales.length : 0,
+    checks: Array.isArray(db.checks) ? db.checks.length : 0
+  };
+}
+
+function isDbCompletelyEmpty(db: DatabaseSchema): boolean {
+  return (
+    (!db.companies || db.companies.length === 0) &&
+    (!db.projects || db.projects.length === 0) &&
+    (!db.transactions || db.transactions.length === 0) &&
+    (!db.accounts || db.accounts.length === 0) &&
+    (!db.contacts || db.contacts.length === 0)
+  );
+}
+
+function createLocalBackupSnapshot(db: DatabaseSchema, sourceLabel: string = "بکاپ محلی خودکار") {
+  try {
+    const backupsDir = getBackupsDir();
+    const { shamsiDate, shamsiTime, versionName } = getShamsiDateTimeServer();
+    const createdAt = Date.now();
+    const id = `local_${createdAt}`;
+    const stats = getDbStats(db);
+
+    const payload = {
+      id,
+      versionName,
+      shamsiDate,
+      shamsiTime,
+      createdAt,
+      source: sourceLabel,
+      location: "local",
+      stats,
+      db
+    };
+
+    const filename = `version_${createdAt}.json`;
+    fs.writeFileSync(path.join(backupsDir, filename), JSON.stringify(payload, null, 2), "utf-8");
+
+    // Keep latest 30 local versioned backups
+    const files = fs.readdirSync(backupsDir)
+      .filter(f => f.startsWith("version_") && f.endsWith(".json"))
+      .map(f => ({ name: f, time: fs.statSync(path.join(backupsDir, f)).mtime.getTime() }));
+
+    if (files.length > 30) {
+      files.sort((a, b) => a.time - b.time);
+      const toDelete = files.length - 30;
+      for (let i = 0; i < toDelete; i++) {
+        try { fs.unlinkSync(path.join(backupsDir, files[i].name)); } catch {}
+      }
+    }
+
+    return {
+      id,
+      versionName,
+      shamsiDate,
+      shamsiTime,
+      createdAt,
+      source: sourceLabel,
+      location: "local",
+      stats
+    };
+  } catch (err) {
+    console.error("Failed to create local backup snapshot:", err);
+    return null;
+  }
+}
+
+async function createOnlineAndLocalBackup(db: DatabaseSchema, sourceLabel: string, customCfUrl?: string) {
+  const localVersion = createLocalBackupSnapshot(db, sourceLabel);
+  let onlineVersion = null;
+  let syncedOnline = false;
+
+  const settings = readSettings();
+  const targetCfUrl = (customCfUrl || settings.cfWorkerUrl || DEFAULT_SETTINGS.cfWorkerUrl || "").replace(/\/+$/, "");
+
+  if (targetCfUrl) {
+    try {
+      const response = await fetch(`${targetCfUrl}/api/db/import`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(settings.syncToken ? { "x-sync-token": settings.syncToken } : {})
+        },
+        body: JSON.stringify({
+          ...db,
+          _backupSource: sourceLabel
+        })
+      });
+      if (response.ok) {
+        const resData: any = await response.json().catch(() => ({}));
+        onlineVersion = resData.backupVersion || null;
+        syncedOnline = true;
+      }
+    } catch (e) {
+      console.error("Online backup sync warning (offline mode continues safely):", e);
+    }
+  }
+
+  return {
+    localVersion,
+    onlineVersion,
+    syncedOnline
+  };
+}
+
+function markFirstInstallCompleted() {
+  try {
+    const settings = readSettings();
+    if (!settings.firstInstallSynced) {
+      settings.firstInstallSynced = true;
+      writeSettings(settings);
+    }
+    if (process.env.USER_DATA_DIR) {
+      const flagPath = path.join(process.env.USER_DATA_DIR, "first_install_completed.flag");
+      if (!fs.existsSync(flagPath)) {
+        fs.writeFileSync(flagPath, new Date().toISOString(), "utf-8");
+      }
+    }
+  } catch (e) {
+    console.error("Error marking first install flag:", e);
+  }
+}
+
 // 1. Get entire DB
 app.get("/api/db", (req, res) => {
   res.json(readDb());
 });
 
-// 2. Reset database to default mock state
+// 1b. First-Install Cloud Initialization Check & Sync
+app.post("/api/first-install-sync", async (req, res) => {
+  try {
+    const settings = readSettings();
+    const localDb = readDb();
+    const isEmpty = isDbCompletelyEmpty(localDb);
+    const isFirstInstall = !settings.firstInstallSynced || process.env.IS_FIRST_INSTALL === "true";
+
+    if (!isFirstInstall || !isEmpty) {
+      markFirstInstallCompleted();
+      return res.json({
+        status: "success",
+        initializedFromCloud: false,
+        message: "نسخه آفلاین دارای اطلاعات است (اولویت با نسخه آفلاین)",
+        db: localDb
+      });
+    }
+
+    const targetCfUrl = (req.body?.cfUrl || settings.cfWorkerUrl || DEFAULT_SETTINGS.cfWorkerUrl || "").replace(/\/+$/, "");
+    let initializedFromCloud = false;
+    let finalDb = localDb;
+
+    if (targetCfUrl) {
+      try {
+        const cloudRes = await fetch(`${targetCfUrl}/api/db`);
+        if (cloudRes.ok) {
+          const cloudDb: any = await cloudRes.json();
+          if (cloudDb && Array.isArray(cloudDb.projects) && !isDbCompletelyEmpty(cloudDb)) {
+            writeDb(cloudDb);
+            createLocalBackupSnapshot(cloudDb, "دریافت اولیه اطلاعات از فضای ابری در اولین نصب");
+            finalDb = readDb();
+            initializedFromCloud = true;
+          }
+        }
+      } catch (cloudErr) {
+        console.warn("Could not reach cloud on first install, keeping empty default DB:", cloudErr);
+      }
+    }
+
+    markFirstInstallCompleted();
+    process.env.IS_FIRST_INSTALL = "false";
+
+    res.json({
+      status: "success",
+      initializedFromCloud,
+      message: initializedFromCloud
+        ? "در اولین نصب، اطلاعات به صورت خودکار از نسخه ابری خوانده و در نسخه آفلاین ذخیره شد."
+        : "نرم‌افزار به صورت خام و بدون اطلاعات پیش‌فرض آماده استفاده است.",
+      db: finalDb
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 1c. Get All Available Backup Versions (Cloud + Local, Sorted by Date & Time)
+app.get("/api/backups", async (req, res) => {
+  try {
+    const settings = readSettings();
+    const targetCfUrl = ((req.query.cfUrl as string) || settings.cfWorkerUrl || DEFAULT_SETTINGS.cfWorkerUrl || "").replace(/\/+$/, "");
+    const backupsDir = getBackupsDir();
+
+    // 1. Read local versions
+    const localVersions: any[] = [];
+    if (fs.existsSync(backupsDir)) {
+      const files = fs.readdirSync(backupsDir).filter(f => f.startsWith("version_") && f.endsWith(".json"));
+      for (const file of files) {
+        try {
+          const raw = fs.readFileSync(path.join(backupsDir, file), "utf-8");
+          const parsed = JSON.parse(raw);
+          localVersions.push({
+            id: parsed.id,
+            versionName: parsed.versionName,
+            shamsiDate: parsed.shamsiDate,
+            shamsiTime: parsed.shamsiTime,
+            createdAt: parsed.createdAt,
+            source: parsed.source,
+            location: "local",
+            stats: parsed.stats || {}
+          });
+        } catch {}
+      }
+    }
+
+    // 2. Fetch cloud versions
+    let cloudVersions: any[] = [];
+    if (targetCfUrl) {
+      try {
+        const cloudRes = await fetch(`${targetCfUrl}/api/backups`);
+        if (cloudRes.ok) {
+          const cloudData: any = await cloudRes.json();
+          if (cloudData && Array.isArray(cloudData.versions)) {
+            cloudVersions = cloudData.versions.map((v: any) => ({
+              ...v,
+              location: "cloud"
+            }));
+          }
+        }
+
+        // Also check current live cloud DB so if there is live data on cloud, it appears as latest cloud version
+        const liveRes = await fetch(`${targetCfUrl}/api/db`);
+        if (liveRes.ok) {
+          const liveDb: any = await liveRes.json();
+          if (liveDb && Array.isArray(liveDb.projects) && !isDbCompletelyEmpty(liveDb)) {
+            const { shamsiDate, shamsiTime } = getShamsiDateTimeServer();
+            const liveStats = getDbStats(liveDb);
+            // If cloudVersions is empty, add live cloud state as an available version
+            if (cloudVersions.length === 0) {
+              cloudVersions.unshift({
+                id: "cloud_live",
+                versionName: `آخرین وضعیت زنده سرور ابری (${shamsiDate})`,
+                shamsiDate,
+                shamsiTime,
+                createdAt: Date.now(),
+                source: "دیتابیس آنلاین کلودفلر (D1)",
+                location: "cloud",
+                stats: liveStats
+              });
+            }
+          }
+        }
+      } catch (e) {
+        // Offline or cloud unreachable: continue with localVersions
+      }
+    }
+
+    const allVersions = [...cloudVersions, ...localVersions].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    res.json({
+      status: "success",
+      versions: allVersions,
+      localStats: getDbStats(readDb())
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در دریافت لیست ورژن‌های پشتیبان: " + err.message });
+  }
+});
+
+// 1d. Create New Timestamped Backup (Local + Online Cloud)
+app.post("/api/backups/create", async (req, res) => {
+  try {
+    const db = readDb();
+    const sourceLabel = req.body?.source || "ثبت بکاپ و به‌روزرسانی دستی به سرور آنلاین";
+    const result = await createOnlineAndLocalBackup(db, sourceLabel, req.body?.cfUrl);
+    res.json({
+      status: "success",
+      message: result.syncedOnline
+        ? "بکاپ جدید با تاریخ و ساعت فعلی در دیتابیس محلی و سرور آنلاین ابری ثبت شد."
+        : "بکاپ جدید با تاریخ و ساعت فعلی در دیتابیس محلی ثبت شد (سرور ابری در دسترس نبود).",
+      ...result
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در ثبت بکاپ جدید: " + err.message });
+  }
+});
+
+// 1e. Restore / Update Offline App to a Selected Backup Version
+app.post("/api/backups/restore", async (req, res) => {
+  try {
+    const { versionId, location, cfUrl } = req.body;
+    const settings = readSettings();
+    const targetCfUrl = (cfUrl || settings.cfWorkerUrl || DEFAULT_SETTINGS.cfWorkerUrl || "").replace(/\/+$/, "");
+
+    let targetDb: DatabaseSchema | null = null;
+    let restoredVersionInfo: any = null;
+
+    if (req.body.dbData && typeof req.body.dbData === "object") {
+      targetDb = req.body.dbData;
+    } else if (location === "local") {
+      const backupsDir = getBackupsDir();
+      const files = fs.readdirSync(backupsDir).filter(f => f.startsWith("version_") && f.endsWith(".json"));
+      for (const file of files) {
+        const raw = fs.readFileSync(path.join(backupsDir, file), "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed.id === versionId && parsed.db) {
+          targetDb = parsed.db;
+          restoredVersionInfo = parsed;
+          break;
+        }
+      }
+    } else if (location === "cloud" && targetCfUrl) {
+      if (versionId === "cloud_live") {
+        const liveRes = await fetch(`${targetCfUrl}/api/db`);
+        if (liveRes.ok) {
+          targetDb = await liveRes.json() as DatabaseSchema;
+        }
+      } else {
+        const verRes = await fetch(`${targetCfUrl}/api/backups/${encodeURIComponent(versionId)}`);
+        if (verRes.ok) {
+          const verData: any = await verRes.json();
+          if (verData && verData.db) {
+            targetDb = verData.db;
+            restoredVersionInfo = verData.version;
+          }
+        }
+      }
+    }
+
+    if (!targetDb || !Array.isArray(targetDb.projects)) {
+      return res.status(404).json({ error: "اطلاعات ورژن انتخاب‌شده یافت نشد یا معتبر نیست." });
+    }
+
+    // Save a safety snapshot of current offline DB before overwriting (if not empty)
+    const currentDb = readDb();
+    if (!isDbCompletelyEmpty(currentDb)) {
+      createLocalBackupSnapshot(currentDb, "بکاپ محافظتی خودکار قبل از تغییر ورژن");
+    }
+
+    writeDb(targetDb);
+    markFirstInstallCompleted();
+
+    res.json({
+      status: "success",
+      message: `نرم‌افزار آفلاین با موفقیت به ورژن انتخاب‌شده (${restoredVersionInfo?.versionName || versionId}) به‌روزرسانی شد.`,
+      db: readDb()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "خطا در به‌روزرسانی به ورژن انتخاب‌شده: " + err.message });
+  }
+});
+
+// 1f. Pre-Close Automatic Backup Endpoint (Local + Online Cloud)
+app.post("/api/backup-on-close", async (req, res) => {
+  try {
+    const db = readDb();
+    const sourceLabel = req.body?.source || "بکاپ خودکار هنگام بستن نرم‌افزار آفلاین";
+    const result = await createOnlineAndLocalBackup(db, sourceLabel, req.body?.cfUrl);
+    res.json({
+      status: "success",
+      ...result
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Reset database to empty clean state
 app.post("/api/db/reset", (req, res) => {
   writeDb(DEFAULT_DB);
-  res.json({ status: "success", message: "پایگاه داده با اطلاعات دمو مجددا بارگذاری شد" });
+  res.json({ status: "success", message: "تمامی اطلاعات پاکسازی شد و پایگاه داده به حالت خام بازگشت." });
 });
 
 // 2b. Import and synchronize complete database (Offline Sync)
-app.post("/api/db/import", (req, res) => {
+app.post("/api/db/import", async (req, res) => {
   try {
     const incomingDb = req.body;
     
@@ -868,18 +1028,25 @@ app.post("/api/db/import", (req, res) => {
       });
     }
 
-    // Merge or overwrite database
-    writeDb(incomingDb);
+    // Save local timestamped backup before & after import
+    const cleanDb = { ...incomingDb };
+    delete cleanDb._backupSource;
+    delete cleanDb._skipBackupSnapshot;
+
+    writeDb(cleanDb);
+    createLocalBackupSnapshot(cleanDb, incomingDb._backupSource || "به‌روزرسانی پایگاه داده آفلاین");
+    markFirstInstallCompleted();
+
     res.json({ 
       status: "success", 
-      message: "پایگاه داده آفلاین با موفقیت همگام‌سازی و روی سرور اصلی اعمال شد.",
+      message: "پایگاه داده آفلاین با موفقیت همگام‌سازی و ذخیره شد.",
       statistics: {
-        projects: incomingDb.projects.length,
-        transactions: incomingDb.transactions.length,
-        accounts: incomingDb.accounts.length,
-        contacts: incomingDb.contacts.length,
-        checks: incomingDb.checks.length,
-        materials: incomingDb.materials.length
+        projects: cleanDb.projects.length,
+        transactions: cleanDb.transactions.length,
+        accounts: cleanDb.accounts.length,
+        contacts: cleanDb.contacts.length,
+        checks: cleanDb.checks.length,
+        materials: cleanDb.materials.length
       }
     });
   } catch (err: any) {
@@ -971,9 +1138,14 @@ app.post("/api/projects", (req, res) => {
   const isNew = index < 0;
   const existingProj = !isNew ? db.projects[index] : undefined;
 
+  const resolvedCompanyId = req.body.companyId || existingProj?.companyId || db.companies[0]?.id || "c1";
+  if (!db.companies || db.companies.length === 0) {
+    db.companies = [{ id: resolvedCompanyId, name: "دفتر مرکزی", code: "1001" }];
+  }
+
   const newProject: Project = {
     id: req.body.id || "p_" + Date.now(),
-    companyId: req.body.companyId || existingProj?.companyId || "c1",
+    companyId: resolvedCompanyId,
     name: req.body.name,
     address: req.body.address || "",
     totalArea: Number(req.body.totalArea || 0),

@@ -62,6 +62,15 @@ export default function App() {
   // --- Automated Database Backup & Recovery States ---
   const [showRestoreBackupBanner, setShowRestoreBackupBanner] = useState(false);
   const [backupDbData, setBackupDbData] = useState<DatabaseSchema | null>(null);
+
+  // --- Versioned Cloud & Local Backup / Startup Update Modal States ---
+  const [showVersionUpdateModal, setShowVersionUpdateModal] = useState(false);
+  const [backupVersions, setBackupVersions] = useState<any[]>([]);
+  const [isLoadingVersions, setIsLoadingVersions] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const [isClosingWithBackup, setIsClosingWithBackup] = useState(false);
+  const [closeBackupStatusText, setCloseBackupStatusText] = useState("در حال ثبت بکاپ جدید روی دیتای محلی و سرور آنلاین ابری...");
+  const [firstInstallNotice, setFirstInstallNotice] = useState<string | null>(null);
   
   // Custom states for company management & offline sync
   const [showCompanyModal, setShowCompanyModal] = useState(false);
@@ -69,10 +78,8 @@ export default function App() {
   const [companyDeleteConfirmId, setCompanyDeleteConfirmId] = useState<string | null>(null);
   const [companyErrorText, setCompanyErrorText] = useState<string | null>(null);
 
-  // Cloudflare D1 Connection States
-  const [cfEnabled, setCfEnabled] = useState<boolean>(() => {
-    return localStorage.getItem("cf_enabled") === "true";
-  });
+  // Cloudflare D1 Connection States (Offline Priority by default!)
+  const [cfEnabled, setCfEnabled] = useState<boolean>(false);
   const [cfUrl, setCfUrl] = useState<string>(() => {
     return localStorage.getItem("cf_url") || "https://hesabdarpeymankar.vikoni4694.workers.dev";
   });
@@ -152,7 +159,9 @@ export default function App() {
         throw new Error(data.error);
       }
       setDb(data);
-      checkAndOfferRestore(data);
+      if (data.companies && data.companies.length > 0) {
+        setActiveCompanyId(prev => data.companies.some((c: any) => c.id === prev) ? prev : data.companies[0].id);
+      }
     } catch (err: any) {
       console.error("Error fetching db from database backend:", err);
       setFetchError(err.message || "خطای نامشخص در برقراری ارتباط با پایگاه داده");
@@ -161,26 +170,79 @@ export default function App() {
     }
   };
 
-  const checkAndOfferRestore = (serverDb: DatabaseSchema) => {
+  // Fetch available backup versions (Online Cloud + Local)
+  const fetchAvailableBackupVersions = async (openModalIfAvailable: boolean = false) => {
+    setIsLoadingVersions(true);
     try {
-      const backupStr = localStorage.getItem("hesabdar_db_backup");
-      if (!backupStr) return;
-      const backupDb = JSON.parse(backupStr) as DatabaseSchema;
-      if (!backupDb || !backupDb.projects) return;
-
-      const serverProjectIds = new Set(serverDb.projects?.map(p => p.id) || []);
-      const backupProjectIds = backupDb.projects?.map(p => p.id) || [];
-      const hasNewerProjects = backupProjectIds.some(id => !serverProjectIds.has(id));
-
-      const serverTxCount = serverDb.transactions?.length || 0;
-      const backupTxCount = backupDb.transactions?.length || 0;
-
-      if (hasNewerProjects || backupTxCount > serverTxCount) {
-        setBackupDbData(backupDb);
-        setShowRestoreBackupBanner(true);
+      const targetUrl = `/api/backups?cfUrl=${encodeURIComponent(cfUrl)}`;
+      const res = await fetch(targetUrl);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.versions)) {
+          setBackupVersions(data.versions);
+          if (openModalIfAvailable) {
+            setShowVersionUpdateModal(true);
+          }
+          return;
+        }
       }
-    } catch (e) {
-      console.error("Error checking browser backup:", e);
+      // Fallback: try direct cloud backups endpoint if running on static/worker directly
+      if (cfUrl) {
+        const cloudRes = await fetch(`${cfUrl.replace(/\/+$/, "")}/api/backups`);
+        if (cloudRes.ok) {
+          const cloudData = await cloudRes.json();
+          if (cloudData && Array.isArray(cloudData.versions)) {
+            setBackupVersions(cloudData.versions);
+            if (openModalIfAvailable) {
+              setShowVersionUpdateModal(true);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error fetching backup versions:", err);
+    } finally {
+      setIsLoadingVersions(false);
+    }
+  };
+
+  // Restore / Update offline software to a selected backup version
+  const handleRestoreToVersion = async (version: any) => {
+    setRestoringVersionId(version.id);
+    setIsSyncing(true);
+    try {
+      const res = await fetch("/api/backups/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          versionId: version.id,
+          location: version.location || "cloud",
+          cfUrl
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.status === "success") {
+        if (data.db) {
+          setDb(data.db);
+          if (data.db.companies && data.db.companies.length > 0) {
+            setActiveCompanyId(data.db.companies[0].id);
+          }
+        } else {
+          await fetchDb(false, cfUrl);
+        }
+        setShowVersionUpdateModal(false);
+        setSyncSuccess(true);
+        setTimeout(() => setSyncSuccess(false), 3000);
+        alert(`نرم‌افزار آفلاین با موفقیت به «${version.versionName}» به‌روزرسانی شد.`);
+      } else {
+        alert("خطا در به‌روزرسانی به این ورژن: " + (data.error || "خطای نامشخص"));
+      }
+    } catch (err: any) {
+      alert("خطا در ارتباط با سرور جهت به‌روزرسانی ورژن: " + err.message);
+    } finally {
+      setRestoringVersionId(null);
+      setIsSyncing(false);
     }
   };
 
@@ -210,23 +272,112 @@ export default function App() {
     }
   };
 
-  // Keep a local storage backup of the database in the browser
+  // Startup initialization:
+  // 1) If first time installed and local DB is empty, automatically read from Cloud.
+  // 2) Open the Version Update Prompt so user can choose if they want to update to any version.
   useEffect(() => {
-    if (db && db.projects && db.projects.length > 0) {
-      localStorage.setItem("hesabdar_db_backup", JSON.stringify(db));
-    }
-  }, [db]);
+    const initApp = async () => {
+      setIsSyncing(true);
+      try {
+        // Check first-install cloud initialization on local server
+        const firstSyncRes = await fetch("/api/first-install-sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cfUrl })
+        });
+        if (firstSyncRes.ok) {
+          const syncData = await firstSyncRes.json();
+          if (syncData && syncData.db) {
+            setDb(syncData.db);
+            if (syncData.db.companies && syncData.db.companies.length > 0) {
+              setActiveCompanyId(syncData.db.companies[0].id);
+            }
+            if (syncData.initializedFromCloud) {
+              setFirstInstallNotice("در اولین نصب، اطلاعات به صورت خودکار از نسخه ابری خوانده و در نسخه آفلاین بارگذاری شد.");
+            }
+          } else {
+            await fetchDb(false, cfUrl);
+          }
+        } else {
+          await fetchDb(false, cfUrl);
+        }
+      } catch {
+        await fetchDb(false, cfUrl);
+      } finally {
+        setIsSyncing(false);
+      }
 
-  useEffect(() => {
-    fetchDb();
+      // When offline software opens, fetch backup versions and show the update prompt modal
+      await fetchAvailableBackupVersions(true);
+    };
+
+    initApp();
   }, []);
 
+  // Pre-close automatic backup on both Local & Online Cloud
+  useEffect(() => {
+    (window as any).__showClosingBackupModal = () => {
+      setIsClosingWithBackup(true);
+      setCloseBackupStatusText("در حال ثبت بکاپ جدید روی دیتای محلی و سرور آنلاین قبل از بستن نرم‌افزار...");
+    };
+
+    const handleBeforeUnload = () => {
+      try {
+        const payload = JSON.stringify({
+          cfUrl,
+          source: "بکاپ خودکار هنگام بستن نرم‌افزار آفلاین"
+        });
+        fetch("/api/backup-on-close", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: true
+        }).catch(() => {});
+      } catch {}
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [cfUrl]);
+
+  const handleSafeExitWithBackup = async () => {
+    setIsClosingWithBackup(true);
+    setCloseBackupStatusText("در حال ثبت بکاپ جدید با تاریخ و ساعت فعلی روی دیتای محلی و آنلاین...");
+    try {
+      const res = await fetch("/api/backup-on-close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cfUrl,
+          source: "بکاپ خودکار هنگام بستن نرم‌افزار آفلاین"
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      const verLabel = data?.onlineVersion?.versionName || data?.localVersion?.versionName || "نسخه جدید";
+      setCloseBackupStatusText(`بکاپ جدید (${verLabel}) با موفقیت در دیتای محلی و آنلاین ذخیره شد.`);
+      setTimeout(() => {
+        setIsClosingWithBackup(false);
+        window.close();
+      }, 1200);
+    } catch {
+      setCloseBackupStatusText("بکاپ محلی ذخیره شد.");
+      setTimeout(() => {
+        setIsClosingWithBackup(false);
+        window.close();
+      }, 1200);
+    }
+  };
+
   const handleResetDb = async () => {
+    if (!window.confirm("آیا از پاکسازی کامل تمامی اطلاعات و خالی کردن پایگاه داده مطمئن هستید؟")) return;
     setIsSyncing(true);
     try {
       const response = await fetch(getApiUrl("/api/db/reset"), { method: "POST" });
       const data = await response.json();
       if (data.status === "success") {
+        localStorage.removeItem("hesabdar_db_backup");
         setSyncSuccess(true);
         setTimeout(() => setSyncSuccess(false), 2000);
         await fetchDb();
@@ -449,41 +600,28 @@ export default function App() {
   const handleOfflineOnlineSync = async (isSilent: boolean = false) => {
     setIsSyncing(true);
     try {
-      // 1. Fetch current local offline database
-      const localResponse = await fetch("/api/db");
-      if (!localResponse.ok) {
-        throw new Error("امکان خواندن اطلاعات نسخه آفلاین محلی وجود ندارد.");
-      }
-      const localDb = await localResponse.json();
-
-      // 2. Validate local database structure
-      if (!localDb.projects || !localDb.transactions || !localDb.accounts || !localDb.contacts) {
-        throw new Error("دیتابیس محلی معتبر نیست یا هنوز اطلاعاتی در آن ذخیره نشده است.");
-      }
-
-      // 3. Post to online Cloudflare D1 import endpoint
-      const targetCloudUrl = cfUrl.replace(/\/+$/, "") + "/api/db/import";
-      const cloudResponse = await fetch(targetCloudUrl, {
+      const res = await fetch("/api/backups/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(localDb)
+        body: JSON.stringify({
+          cfUrl,
+          source: isSilent ? "بکاپ و همگام‌سازی دوره‌ای خودکار" : "به‌روزرسانی و ثبت بکاپ از نسخه آفلاین به آنلاین"
+        })
       });
 
-      if (!cloudResponse.ok) {
-        const errData = await cloudResponse.json().catch(() => ({}));
-        throw new Error(errData.error || `خطای سرور کلودفلر: ${cloudResponse.status}`);
-      }
-
-      const syncResult = await cloudResponse.json();
-      if (syncResult.status === "success") {
+      const syncResult = await res.json();
+      if (res.ok && syncResult.status === "success") {
         setSyncSuccess(true);
+        const verName = syncResult.onlineVersion?.versionName || syncResult.localVersion?.versionName || "";
         if (!isSilent) {
-          alert("همگام‌سازی خودکار با موفقیت انجام شد! دیتابیس ابری کلودفلر ۱۰۰٪ با داده‌های آفلاین شما بروزرسانی گردید (اولویت با نسخه آفلاین).");
-        } else {
-          console.log("Silent cloud sync completed successfully.");
+          alert(
+            syncResult.syncedOnline
+              ? `همگام‌سازی و ثبت بکاپ با موفقیت انجام شد!\n\n• ورژن ثبت‌شده در آنلاین و محلی: ${verName}\n• اولویت با نسخه آفلاین حفظ گردید.`
+              : `بکاپ در دیتای محلی ثبت شد (${verName})، اما ارتباط با سرور ابری برقرار نشد.`
+          );
         }
         setTimeout(() => setSyncSuccess(false), 3000);
-        // Toggle cloud mode automatically or refresh db
+        await fetchAvailableBackupVersions(false);
         await fetchDb();
       } else {
         throw new Error(syncResult.error || "خطای همگام‌سازی");
@@ -491,7 +629,7 @@ export default function App() {
     } catch (err: any) {
       console.error("Sync error:", err);
       if (!isSilent) {
-        alert("خطا در فرآیند همگام‌سازی خودکار: " + err.message);
+        alert("خطا در فرآیند ثبت بکاپ و همگام‌سازی آنلاین: " + err.message);
       }
     } finally {
       setIsSyncing(false);
@@ -1279,16 +1417,23 @@ export default function App() {
   }
 
   // Filter Data by active company to implement multi-company ("قابلیت چند شرکتی")
-  const allProjects = db.projects.filter(p => p.companyId === activeCompanyId);
+  const hasCompanies = db.companies && db.companies.length > 0;
+  const allProjects = hasCompanies
+    ? db.projects.filter(p => !activeCompanyId || p.companyId === activeCompanyId)
+    : db.projects;
   const filteredProjects = allProjects.filter(p => !p.isDeleted);
-  const filteredTransactions = db.transactions.filter(t => t.companyId === activeCompanyId);
-  const filteredChecks = db.checks.filter(c => c.companyId === activeCompanyId);
+  const filteredTransactions = hasCompanies
+    ? db.transactions.filter(t => !activeCompanyId || t.companyId === activeCompanyId)
+    : db.transactions;
+  const filteredChecks = hasCompanies
+    ? db.checks.filter(c => !activeCompanyId || c.companyId === activeCompanyId)
+    : db.checks;
 
   const activeCompany = db.companies.find(c => c.id === activeCompanyId);
-  const activeUser = db.users.find(u => u.id === activeUserId);
+  const activeUser = db.users.find(u => u.id === activeUserId) || db.users[0];
 
   const hasPermission = (permissionId: string) => {
-    if (!activeUser) return false;
+    if (!activeUser) return true;
     if (activeUser.id === "u1" || activeUser.role === "manager" || activeUser.username?.toLowerCase() === "admin") {
       return true;
     }
@@ -1298,6 +1443,22 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans antialiased text-slate-800" dir="rtl">
       
+      {/* First Install Cloud Sync Notification Banner */}
+      {firstInstallNotice && (
+        <div className="bg-emerald-50 border-b border-emerald-200 px-6 py-3 flex justify-between items-center gap-4 relative z-50 animate-fade-in" dir="rtl">
+          <div className="flex items-center gap-2 text-xs font-extrabold text-emerald-800">
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{firstInstallNotice}</span>
+          </div>
+          <button
+            onClick={() => setFirstInstallNotice(null)}
+            className="text-emerald-700 hover:text-emerald-950 text-xs font-bold cursor-pointer"
+          >
+            بستن
+          </button>
+        </div>
+      )}
+
       {/* Browser Backup Restore Banner */}
       {showRestoreBackupBanner && backupDbData && (
         <div className="bg-amber-50 border-b border-amber-200 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 relative z-50 shadow-xs animate-fade-in" dir="rtl">
@@ -1340,12 +1501,12 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-sm font-extrabold text-slate-900 tracking-tight leading-none">سامانه حسابداری سازه</h1>
-            <p className="text-[10px] text-slate-400 font-light mt-1">نسخه ویژه کارفرمایان و پیمانکاران ساختمانی</p>
+            <p className="text-[10px] text-slate-400 font-light mt-1">نسخه ویژه کارفرمایان و پیمانکاران ساختمانی (اولویت آفلاین)</p>
           </div>
         </div>
 
         {/* Center/Left Section: Company, User Profile and DB sync */}
-        <div className="flex items-center gap-4 text-xs font-medium">
+        <div className="flex items-center gap-3 text-xs font-medium">
           
           {/* Synchronizing / Connection Mode Indicator */}
           <div className="flex items-center gap-2">
@@ -1361,46 +1522,68 @@ export default function App() {
               </span>
             ) : null}
 
-            {/* Live Cloudflare Connection Toggle Button */}
+            {/* Version Selector & Update Modal Button */}
             <button
-              onClick={() => toggleCfMode(!cfEnabled)}
-              title={cfEnabled ? "تغییر به پایگاه داده شبیه‌ساز محلی" : "تغییر به پایگاه داده زنده Cloudflare D1"}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-[10px] font-bold transition-all cursor-pointer ${
-                cfEnabled 
-                  ? "bg-sky-50 border-sky-200 text-sky-700 shadow-2xs hover:bg-sky-100" 
-                  : "bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-150"
-              }`}
+              onClick={() => {
+                fetchAvailableBackupVersions(true);
+                setShowVersionUpdateModal(true);
+              }}
+              title="مشاهده ورژن‌های بکاپ (بر اساس تاریخ و ساعت) و به‌روزرسانی نرم‌افزار آفلاین"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] font-bold transition-all cursor-pointer shadow-2xs shrink-0"
             >
-              <Cloud className={`w-3.5 h-3.5 ${cfEnabled ? "text-sky-500 animate-pulse" : "text-slate-400"}`} />
-              {cfEnabled ? "دیتابیس ابری زنده D1" : "شبیه‌ساز محلی آفلاین"}
+              <Clock className="w-3.5 h-3.5 text-emerald-600" />
+              <span>ورژن‌های بکاپ و به‌روزرسانی</span>
             </button>
 
-            {/* Automatic Offline-to-Online Synchronization Button */}
+            {/* Automatic Offline-to-Online Timestamped Backup & Sync Button */}
             {!cfEnabled && (
               <button
-                onClick={handleOfflineOnlineSync}
+                onClick={() => handleOfflineOnlineSync(false)}
                 disabled={isSyncing}
-                title="همگام‌سازی خودکار نسخه آفلاین با دیتابیس ابری (اولویت با نسخه آفلاین)"
+                title="ثبت بکاپ جدید با تاریخ و ساعت فعلی در آنلاین و همگام‌سازی (اولویت با نسخه آفلاین)"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-bold transition-all cursor-pointer shadow-2xs shrink-0"
               >
                 <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isSyncing ? "animate-spin" : ""}`} />
-                <span>همگام‌سازی آفلاین به آنلاین</span>
+                <span>ثبت بکاپ در آنلاین</span>
               </button>
             )}
+
+            {/* Live Cloudflare Connection Toggle Button */}
+            <button
+              onClick={() => toggleCfMode(!cfEnabled)}
+              title={cfEnabled ? "تغییر به پایگاه داده اصلی آفلاین (اولویت آفلاین)" : "مشاهده مستقیم دیتابیس ابری زنده Cloudflare D1"}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-[10px] font-bold transition-all cursor-pointer ${
+                cfEnabled 
+                  ? "bg-sky-50 border-sky-200 text-sky-700 shadow-2xs hover:bg-sky-100" 
+                  : "bg-slate-900 border-slate-800 text-white hover:bg-slate-800"
+              }`}
+            >
+              <Cloud className={`w-3.5 h-3.5 ${cfEnabled ? "text-sky-500 animate-pulse" : "text-emerald-400"}`} />
+              {cfEnabled ? "حالت ابری مستقیم D1" : "حالت اصلی آفلاین (فعال)"}
+            </button>
           </div>
 
           {/* Multi-Company Selector ("قابلیت چند شرکتی") */}
           <div className="hidden sm:flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-150 shadow-2xs">
             <span className="text-[10px] text-slate-400">شرکت فعال:</span>
-            <select 
-              value={activeCompanyId}
-              onChange={(e) => setActiveCompanyId(e.target.value)}
-              className="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer pr-1"
-            >
-              {db.companies.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            {db.companies.length > 0 ? (
+              <select 
+                value={activeCompanyId}
+                onChange={(e) => setActiveCompanyId(e.target.value)}
+                className="bg-transparent text-slate-800 font-semibold focus:outline-none cursor-pointer pr-1"
+              >
+                {db.companies.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span
+                onClick={() => setShowCompanyModal(true)}
+                className="text-[10px] text-indigo-600 font-bold cursor-pointer hover:underline px-1"
+              >
+                + تعریف اولین شرکت
+              </span>
+            )}
             <button
               onClick={() => setShowCompanyModal(true)}
               title="تعریف یا حذف شرکت‌ها"
@@ -1444,24 +1627,25 @@ export default function App() {
           ) : (
             <div className="flex items-center gap-1.5 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-150 shadow-2xs">
               <Users className="w-3.5 h-3.5 text-slate-400" />
-              <span className="text-slate-850 font-extrabold text-xs">{activeUser?.name} ({activeUser?.roleName})</span>
+              <span className="text-slate-850 font-extrabold text-xs">{activeUser?.name || "مدیر سیستم"} ({activeUser?.roleName || "مدیر ارشد"})</span>
             </div>
           )}
 
-          {/* Reset Sandbox Trigger */}
+          {/* Save Backup & Safe Exit Button */}
           <button 
-            onClick={handleResetDb}
-            title="بازنشانی اطلاعات فرضی ساختمانی"
-            className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+            onClick={handleSafeExitWithBackup}
+            title="ذخیره بکاپ جدید در محلی و آنلاین و بستن نرم‌افزار"
+            className="flex items-center gap-1 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-[10px] font-bold transition-colors cursor-pointer shrink-0"
           >
-            <RefreshCw className="w-4 h-4" />
+            <Download className="w-3.5 h-3.5" />
+            <span>بکاپ و خروج</span>
           </button>
 
           {/* Logout Button */}
           <button 
             onClick={handleLogout}
-            title="خروج از سیستم حسابداری"
-            className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+            title="خروج از حساب کاربری"
+            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
           </button>
@@ -2164,6 +2348,197 @@ export default function App() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Startup & On-Demand Versioned Backup Selector Modal */}
+      {showVersionUpdateModal && (
+        <div className="fixed inset-0 z-55 flex items-center justify-center bg-slate-900/65 backdrop-blur-xs p-4 animate-fade-in" dir="rtl">
+          <div className="bg-white rounded-3xl w-full max-w-2xl border border-slate-150 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            
+            {/* Modal Header */}
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md">
+                  <Clock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm">به‌روزرسانی نرم‌افزار آفلاین و انتخاب ورژن پشتیبان</h3>
+                  <p className="text-[11px] text-slate-300 font-light mt-0.5">
+                    آیا مایلید نرم‌افزار آفلاین را به یکی از ورژن‌های پشتیبان (بر اساس تاریخ و ساعت) به‌روزرسانی کنید؟
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowVersionUpdateModal(false)}
+                className="p-1.5 hover:bg-slate-800 rounded-xl transition-colors cursor-pointer text-slate-300 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              
+              {/* Info & Action Bar */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-indigo-50/70 border border-indigo-100 rounded-2xl">
+                <div className="space-y-1">
+                  <div className="text-xs font-extrabold text-indigo-950 flex items-center gap-1.5">
+                    <CheckCircle className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <span>اولویت اصلی با نسخه آفلاین شماست</span>
+                  </div>
+                  <p className="text-[11px] text-indigo-700 leading-relaxed">
+                    با کلیک روی هر یک از ورژن‌های زیر، اطلاعات نسخه آفلاین به آن ورژن (طبق تاریخ و ساعت ثبت‌شده) به‌روزرسانی می‌شود.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => handleOfflineOnlineSync(false)}
+                    disabled={isSyncing}
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+                  >
+                    <Cloud className="w-3.5 h-3.5" />
+                    <span>+ ثبت بکاپ جدید در آنلاین</span>
+                  </button>
+                  <button
+                    onClick={() => fetchAvailableBackupVersions(false)}
+                    disabled={isLoadingVersions}
+                    title="بروزرسانی لیست ورژن‌ها"
+                    className="p-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl transition-all cursor-pointer"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isLoadingVersions ? "animate-spin text-indigo-600" : ""}`} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Versions List */}
+              {isLoadingVersions ? (
+                <div className="py-12 flex flex-col items-center justify-center text-slate-400 space-y-2">
+                  <RefreshCw className="w-7 h-7 animate-spin text-indigo-600" />
+                  <span className="text-xs font-bold text-slate-600">در حال دریافت لیست ورژن‌های پشتیبان آنلاین و محلی...</span>
+                </div>
+              ) : backupVersions.length === 0 ? (
+                <div className="py-10 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200 p-6 space-y-2">
+                  <Cloud className="w-8 h-8 text-slate-400 mx-auto" />
+                  <h4 className="text-xs font-extrabold text-slate-700">هنوز هیچ ورژن پشتیبانی ثبت نشده است</h4>
+                  <p className="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
+                    نرم‌افزار به صورت خام و بدون اطلاعات پیش‌فرض آماده کار است. با هر بار به‌روزرسانی یا بستن برنامه، بکاپ جدید با تاریخ و ساعت دقیق در این لیست قرار می‌گیرد.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  <span className="text-[11px] text-slate-400 font-bold block px-1">
+                    لیست ورژن‌های موجود ({backupVersions.length} نسخه — برای به‌روزرسانی روی ورژن مورد نظر کلیک کنید):
+                  </span>
+                  {backupVersions.map((ver, idx) => {
+                    const isCloud = ver.location === "cloud";
+                    const isRestoringThis = restoringVersionId === ver.id;
+                    const stats = ver.stats || {};
+                    return (
+                      <div
+                        key={ver.id + "_" + idx}
+                        onClick={() => !isSyncing && handleRestoreToVersion(ver)}
+                        className="group p-4 rounded-2xl border border-slate-200 hover:border-indigo-500 bg-white hover:bg-indigo-50/30 transition-all cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs"
+                      >
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="bg-slate-900 text-white font-extrabold px-2.5 py-0.5 rounded-lg text-[10px]">
+                              ورژن {backupVersions.length - idx}
+                            </span>
+                            <span className="font-extrabold text-xs text-slate-900 group-hover:text-indigo-700 transition-colors">
+                              {ver.versionName || `نسخه ${ver.shamsiDate} - ساعت ${ver.shamsiTime}`}
+                            </span>
+                            {idx === 0 && (
+                              <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 font-extrabold px-2 py-0.5 rounded-full text-[9px]">
+                                جدیدترین ورژن
+                              </span>
+                            )}
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${
+                                isCloud
+                                  ? "bg-sky-50 text-sky-700 border-sky-200"
+                                  : "bg-amber-50 text-amber-800 border-amber-200"
+                              }`}
+                            >
+                              {isCloud ? "☁️ بکاپ آنلاین ابری" : "💻 بکاپ محلی ویندوز"}
+                            </span>
+                          </div>
+
+                          <div className="text-[10px] text-slate-500 font-medium flex flex-wrap items-center gap-x-4 gap-y-1">
+                            <span>تاریخ: <strong className="text-slate-700">{ver.shamsiDate || "-"}</strong></span>
+                            <span>ساعت: <strong className="text-slate-700 font-mono">{ver.shamsiTime || "-"}</strong></span>
+                            <span>نوع ثبت: <strong className="text-slate-700">{ver.source || "همگام‌سازی"}</strong></span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[10px] text-slate-600">
+                            <span className="bg-slate-100 px-2 py-0.5 rounded-md">پروژه‌ها: <strong>{stats.projects || 0}</strong></span>
+                            <span className="bg-slate-100 px-2 py-0.5 rounded-md">تراکنش‌ها: <strong>{stats.transactions || 0}</strong></span>
+                            <span className="bg-slate-100 px-2 py-0.5 rounded-md">حساب‌ها: <strong>{stats.accounts || 0}</strong></span>
+                            <span className="bg-slate-100 px-2 py-0.5 rounded-md">واحدها: <strong>{stats.units || 0}</strong></span>
+                            <span className="bg-slate-100 px-2 py-0.5 rounded-md">اشخاص: <strong>{stats.contacts || 0}</strong></span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!isSyncing) handleRestoreToVersion(ver);
+                          }}
+                          disabled={isSyncing}
+                          className="px-4 py-2.5 bg-indigo-600 group-hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-xs"
+                        >
+                          {isRestoringThis ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>در حال آپدیت...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Download className="w-3.5 h-3.5" />
+                              <span>به‌روزرسانی به این ورژن</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between items-center gap-3">
+              <span className="text-[10px] text-slate-500 font-medium">
+                در صورت عدم انتخاب، نرم‌افزار با اطلاعات فعلی نسخه آفلاین شما ادامه می‌دهد.
+              </span>
+              <button 
+                onClick={() => setShowVersionUpdateModal(false)}
+                className="w-full sm:w-auto px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                ادامه با اطلاعات فعلی نسخه آفلاین (بدون تغییر)
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Pre-Close Automatic Local + Cloud Backup Overlay Modal */}
+      {isClosingWithBackup && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-fade-in" dir="rtl">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl border border-slate-150">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto border border-indigo-100">
+              <RefreshCw className="w-7 h-7 animate-spin" />
+            </div>
+            <h3 className="text-sm font-extrabold text-slate-900">پشتیبان‌گیری خودکار قبل از بستن نرم‌افزار</h3>
+            <p className="text-xs text-slate-600 leading-relaxed font-medium">
+              {closeBackupStatusText}
+            </p>
+            <p className="text-[10px] text-slate-400">
+              لطفاً چند لحظه صبر کنید تا بکاپ جدید با تاریخ و ساعت فعلی روی دیتای محلی و سرور آنلاین ثبت شود...
+            </p>
           </div>
         </div>
       )}

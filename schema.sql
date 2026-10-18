@@ -76,7 +76,10 @@ CREATE TABLE IF NOT EXISTS pre_sales (
   price_per_meter REAL,
   total_price REAL,
   contract_date TEXT,
-  status TEXT
+  status TEXT,
+  has_exact_area INTEGER DEFAULT 0,
+  exact_area REAL,
+  secondary_price_per_meter REAL
 );
 
 CREATE TABLE IF NOT EXISTS pre_sale_installments (
@@ -86,7 +89,8 @@ CREATE TABLE IF NOT EXISTS pre_sale_installments (
   due_date TEXT,
   amount REAL,
   is_paid INTEGER,
-  paid_date TEXT
+  paid_date TEXT,
+  paid_amount REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS alerts_log (
@@ -137,7 +141,13 @@ CREATE TABLE IF NOT EXISTS transactions (
   barter_description TEXT,
   barter_agreed_value REAL,
   attachment_name TEXT,
-  attachment_data TEXT -- Store base64 data for electronic archiving
+  attachment_data TEXT,
+  approval_status TEXT DEFAULT 'approved',
+  approved_amount REAL,
+  approved_by TEXT,
+  approved_date TEXT,
+  pre_sale_id TEXT,
+  contact_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS checks (
@@ -165,5 +175,77 @@ CREATE TABLE IF NOT EXISTS units (
   status TEXT,
   buyer_name TEXT,
   down_payment REAL,
-  barter_property TEXT
+  barter_property TEXT,
+  specific_expenses TEXT,
+  is_deleted INTEGER DEFAULT 0,
+  deleted_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  role TEXT,
+  role_name TEXT,
+  username TEXT,
+  password TEXT,
+  permissions TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS timesheets (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  contact_id TEXT,
+  person_name TEXT,
+  date TEXT,
+  hours_worked REAL,
+  overtime_hours REAL,
+  daily_rate REAL,
+  overtime_rate REAL,
+  total_pay REAL,
+  stage TEXT,
+  description TEXT,
+  is_paid INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS payrolls (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  contact_id TEXT,
+  person_name TEXT,
+  month TEXT,
+  year TEXT,
+  base_salary REAL,
+  housing_allowance REAL,
+  food_allowance REAL,
+  child_allowance REAL,
+  overtime_hours REAL,
+  overtime_pay REAL,
+  bonuses REAL,
+  insurance_worker REAL,
+  insurance_employer REAL,
+  tax_deduction REAL,
+  advance_deduction REAL,
+  other_deductions REAL,
+  gross_salary REAL,
+  net_payable REAL,
+  payment_date TEXT,
+  account_id TEXT,
+  is_paid INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS backups (
+  id TEXT PRIMARY KEY,
+  version_name TEXT,
+  shamsi_date TEXT,
+  shamsi_time TEXT,
+  created_at INTEGER,
+  source TEXT,
+  stats_json TEXT,
+  db_json TEXT
+);
+

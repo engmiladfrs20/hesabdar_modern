@@ -22,6 +22,7 @@ function camelToSnake(str) {
 function getTodayShamsiWorker() {
   try {
     const parts = new Intl.DateTimeFormat("en-US-u-ca-persian", {
+      timeZone: "Asia/Tehran",
       year: "numeric",
       month: "2-digit",
       day: "2-digit"
@@ -32,6 +33,89 @@ function getTodayShamsiWorker() {
     return `${y}/${m.padStart(2, "0")}/${d.padStart(2, "0")}`;
   } catch {
     return "1404/01/01";
+  }
+}
+
+function getShamsiDateTimeWorker() {
+  const shamsiDate = getTodayShamsiWorker();
+  let shamsiTime = "00:00:00";
+  try {
+    const now = new Date();
+    const tParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Tehran",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).formatToParts(now);
+    const hh = tParts.find(p => p.type === "hour")?.value || String(now.getHours()).padStart(2, "0");
+    const mm = tParts.find(p => p.type === "minute")?.value || String(now.getMinutes()).padStart(2, "0");
+    const ss = tParts.find(p => p.type === "second")?.value || String(now.getSeconds()).padStart(2, "0");
+    shamsiTime = `${hh.padStart(2, "0")}:${mm.padStart(2, "0")}:${ss.padStart(2, "0")}`;
+  } catch {
+    const now = new Date();
+    shamsiTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+  }
+  return {
+    shamsiDate,
+    shamsiTime,
+    versionName: `نسخه ${shamsiDate} - ساعت ${shamsiTime}`
+  };
+}
+
+async function createCloudBackupSnapshot(env, dbData, sourceLabel = "همگام‌سازی خودکار") {
+  if (!env || !env.DB || !dbData) return null;
+  try {
+    const { shamsiDate, shamsiTime, versionName } = getShamsiDateTimeWorker();
+    const id = "ver_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    const createdAt = Date.now();
+    const stats = {
+      companies: Array.isArray(dbData.companies) ? dbData.companies.length : 0,
+      projects: Array.isArray(dbData.projects) ? dbData.projects.filter(p => !p.isDeleted).length : 0,
+      transactions: Array.isArray(dbData.transactions) ? dbData.transactions.length : 0,
+      accounts: Array.isArray(dbData.accounts) ? dbData.accounts.length : 0,
+      units: Array.isArray(dbData.units) ? dbData.units.filter(u => !u.isDeleted).length : 0,
+      contacts: Array.isArray(dbData.contacts) ? dbData.contacts.length : 0,
+      preSales: Array.isArray(dbData.preSales) ? dbData.preSales.length : 0,
+      checks: Array.isArray(dbData.checks) ? dbData.checks.length : 0
+    };
+    const cleanDb = { ...dbData };
+    delete cleanDb._backupSource;
+    delete cleanDb._skipBackupSnapshot;
+
+    await env.DB.prepare(`
+      INSERT INTO backups (id, version_name, shamsi_date, shamsi_time, created_at, source, stats_json, db_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      versionName,
+      shamsiDate,
+      shamsiTime,
+      createdAt,
+      sourceLabel,
+      JSON.stringify(stats),
+      JSON.stringify(cleanDb)
+    ).run();
+
+    // Keep latest 30 backups in D1
+    await env.DB.prepare(`
+      DELETE FROM backups WHERE id NOT IN (
+        SELECT id FROM backups ORDER BY created_at DESC LIMIT 30
+      )
+    `).run().catch(() => {});
+
+    return {
+      id,
+      versionName,
+      shamsiDate,
+      shamsiTime,
+      createdAt,
+      source: sourceLabel,
+      stats
+    };
+  } catch (e) {
+    console.error("Failed to create cloud backup snapshot:", e);
+    return null;
   }
 }
 
@@ -159,8 +243,11 @@ async function ensureDatabaseSchema(env) {
     `CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, company_id TEXT, project_id TEXT, type TEXT, category TEXT, sub_category TEXT, amount REAL, account_id TEXT, person_name TEXT, date TEXT, description TEXT, is_non_cash INTEGER DEFAULT 0, barter_property_type TEXT, barter_description TEXT, barter_agreed_value REAL, attachment_name TEXT, attachment_data TEXT)`,
     `CREATE TABLE IF NOT EXISTS checks (id TEXT PRIMARY KEY, company_id TEXT, project_id TEXT, check_number TEXT, bank_name TEXT, due_date TEXT, amount REAL, type TEXT, status TEXT, person_name TEXT, description TEXT)`,
     `CREATE TABLE IF NOT EXISTS units (id TEXT PRIMARY KEY, project_id TEXT, unit_number TEXT, floor TEXT, area REAL, price_per_meter REAL, total_price REAL, status TEXT, buyer_name TEXT, down_payment REAL, barter_property TEXT, specific_expenses TEXT)`,
-    `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT, role_name TEXT, username TEXT, password TEXT)`,
-    `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)`
+    `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT, role_name TEXT, username TEXT, password TEXT, permissions TEXT)`,
+    `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)`,
+    `CREATE TABLE IF NOT EXISTS timesheets (id TEXT PRIMARY KEY, project_id TEXT, contact_id TEXT, person_name TEXT, date TEXT, hours_worked REAL, overtime_hours REAL, daily_rate REAL, overtime_rate REAL, total_pay REAL, stage TEXT, description TEXT, is_paid INTEGER DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS payrolls (id TEXT PRIMARY KEY, project_id TEXT, contact_id TEXT, person_name TEXT, month TEXT, year TEXT, base_salary REAL, housing_allowance REAL, food_allowance REAL, child_allowance REAL, overtime_hours REAL, overtime_pay REAL, bonuses REAL, insurance_worker REAL, insurance_employer REAL, tax_deduction REAL, advance_deduction REAL, other_deductions REAL, gross_salary REAL, net_payable REAL, payment_date TEXT, account_id TEXT, is_paid INTEGER DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS backups (id TEXT PRIMARY KEY, version_name TEXT, shamsi_date TEXT, shamsi_time TEXT, created_at INTEGER, source TEXT, stats_json TEXT, db_json TEXT)`
   ];
 
   for (const q of schemaQueries) {
@@ -183,87 +270,29 @@ async function ensureDatabaseSchema(env) {
   try { await env.DB.prepare("ALTER TABLE units ADD COLUMN is_deleted INTEGER DEFAULT 0").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE units ADD COLUMN deleted_at TEXT").run(); } catch(e){}
   
-  // Ensure users has permissions and transactions has approval columns
+  // Ensure users has permissions and transactions has approval & pre_sale_id columns
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN permissions TEXT").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approval_status TEXT DEFAULT 'approved'").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approved_amount REAL").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approved_by TEXT").run(); } catch(e){}
   try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN approved_date TEXT").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN pre_sale_id TEXT").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE transactions ADD COLUMN contact_id TEXT").run(); } catch(e){}
 
-  // Auto-seed if companies table is empty
+  // Ensure pre_sales has exact_area, secondary_price_per_meter, has_exact_area
+  try { await env.DB.prepare("ALTER TABLE pre_sales ADD COLUMN has_exact_area INTEGER DEFAULT 0").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE pre_sales ADD COLUMN exact_area REAL").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE pre_sales ADD COLUMN secondary_price_per_meter REAL").run(); } catch(e){}
+  try { await env.DB.prepare("ALTER TABLE pre_sale_installments ADD COLUMN paid_amount REAL DEFAULT 0").run(); } catch(e){}
+
+  // Ensure default admin user exists if users table is empty (NO fake demo data is seeded)
   try {
-    const checkCompany = await env.DB.prepare("SELECT COUNT(*) as count FROM companies").first();
-    if (!checkCompany || checkCompany.count === 0) {
-      console.log("Database is empty, auto-seeding...");
-      
-      // Seed Users
+    const checkUsers = await env.DB.prepare("SELECT COUNT(*) as count FROM users").first();
+    if (!checkUsers || checkUsers.count === 0) {
       await env.DB.prepare("INSERT INTO users (id, name, role, role_name, username, password) VALUES ('u1', 'مهندس میلاد فرخی', 'manager', 'مدیر ارشد پروژه', 'admin', 'Miladlar224')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO users (id, name, role, role_name, username, password) VALUES ('u2', 'خانم مریم احمدی', 'accountant', 'حسابدار مالی', 'accountant', '123456')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO users (id, name, role, role_name, username, password) VALUES ('u3', 'حاج علی عباسی', 'investor', 'سرمایه‌گذار شریک', 'investor', '123456')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO users (id, name, role, role_name, username, password) VALUES ('u4', 'مهندس علیرضا اکبری', 'supervisor', 'سرپرست کارگاه', 'supervisor', '123456')").run().catch(() => {});
-      
-      // Seed Companies
-      await env.DB.prepare("INSERT INTO companies (id, name, code) VALUES ('c1', 'شرکت عمرانی رادین سازه شیراز', '10243')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO companies (id, name, code) VALUES ('c2', 'پیشگامان مسکن مهرگان', '55890')").run().catch(() => {});
-
-      // Seed Projects
-      const p1Stages = JSON.stringify(["خاک‌برداری و پی‌ریزی", "اسکلت بتنی", "سفت‌کاری و دیوارچینی", "نازک‌کاری و نما", "تأسیسات الکتریکال و مکانیکال", "پایان کار و دکوراسیون داخلی"]);
-      await env.DB.prepare(`
-        INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status)
-        VALUES ('p1', 'c1', 'پروژه مسکونی مروارید نیاوران', 'تهران، نیاوران، خیابان یاسر، پلاک ۱۲', 2400, 48000000000, ?, 'سفت‌کاری و دیوارچینی', 'active')
-      `).bind(p1Stages).run().catch(() => {});
-
-      const p2Stages = JSON.stringify(["پایدارسازی و نیلینگ", "فونداسیون", "اسکلت فلزی پیچ و مهره", "سفت‌کاری", "تأسیسات و اطفاء حریق", "شیشه‌گذاری و دکوراسیون"]);
-      await env.DB.prepare(`
-        INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status)
-        VALUES ('p2', 'c1', 'مجتمع تجاری آرامش سعادت‌آباد', 'تهران، سعادت‌آباد، میدان کاج، نبش خیابان نهم', 5500, 120000000000, ?, 'اسکلت فلزی پیچ و مهره', 'active')
-      `).bind(p2Stages).run().catch(() => {});
-
-      // Seed Accounts with standard codes
-      await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, account_number, bank_name, balance, code, level, parent_code, nature) VALUES ('a1', 'بانک ملی - جاری کارفرما (۱۴۰۲)', 'bank', 'بانک تجاری', '0105432109002', 'ملی ایران', 14200000000, '101001', 3, '101', 'debtor')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, account_number, bank_name, balance, code, level, parent_code, nature) VALUES ('a2', 'بانک سامان - حساب مرکزی پشتیبان', 'bank', 'بانک تجاری', '844-3210-993-1', 'سامان', 28500000000, '101002', 3, '101', 'debtor')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, balance, code, level, parent_code, nature) VALUES ('a3', 'صندوق تنخواه کارگاه (مهندس اکبری)', 'petty_cash', 'تنخواه گردان کارگاه', 45000000, '101003', 3, '101', 'debtor')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, balance, code, level, parent_code, nature) VALUES ('a4', 'علی عباسی (سرمایه‌گذار شریک)', 'investor', 'حساب سرمایه‌گذار', -8000000000, '301001', 3, '301', 'creditor')").run().catch(() => {});
-
-      // Seed Contacts
-      await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, bank_card_number, balance, created_at) VALUES ('co1', 'خانم دکتر مهدوی', '09121111111', 'pre_buyer', '0012233445', '6037991122334455', 23800000000, '1403/01/20')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, bank_card_number, balance, created_at) VALUES ('co2', 'مهندس شفیعی', '09122222222', 'pre_buyer', '0022233446', '6104332211005544', 30400000000, '1403/02/01')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co3', 'شرکت فلزات آریا', '02188888888', 'subcontractor', '10100293810', -8000000000, '1403/01/10')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co4', 'صنایع بتن تهران کادوس', '02144444444', 'supplier', '14002931201', -1800000000, '1403/01/15')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co5', 'مهندس علیرضا اکبری', '09123333333', 'imprest_holder', '0033344556', 450000000, '1403/01/10')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co6', 'مهندس کریمی', '09124444444', 'imprest_holder', '0044455667', 350000000, '1403/01/12')").run().catch(() => {});
-
-      // Seed Imprest Funds
-      await env.DB.prepare("INSERT INTO imprest_funds (id, project_id, contact_id, allocated_limit, balance, status, last_reconciliation_date, created_at) VALUES ('im1', 'p1', 'co5', 500000000, 450000000, 'active', '1403/01/10', '1403/01/10')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO imprest_funds (id, project_id, contact_id, allocated_limit, balance, status, last_reconciliation_date, created_at) VALUES ('im2', 'p2', 'co6', 400000000, 350000000, 'active', '1403/01/12', '1403/01/12')").run().catch(() => {});
-
-      // Seed Imprest Expenses
-      await env.DB.prepare("INSERT INTO imprest_expenses (id, imprest_id, expense_date, amount, description, material_category, status, created_at) VALUES ('ie1', 'im1', '1403/02/12', 50000000, 'خرید لوله اتصالات پلیکا فاضلابی کارگاه', 'تأسیسات', 'approved', '1403/02/12')").run().catch(() => {});
-
-      // Seed Pre-sales
-      await env.DB.prepare("INSERT INTO pre_sales (id, project_id, contact_id, unit_id, contract_area, price_per_meter, total_price, contract_date, status) VALUES ('ps1', 'p1', 'co1', 'u_102', 140, 170000000, 23800000000, '1403/01/20', 'active')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO pre_sales (id, project_id, contact_id, unit_id, contract_area, price_per_meter, total_price, contract_date, status) VALUES ('ps2', 'p1', 'co2', 'u_201', 160, 190000000, 30400000000, '1403/02/01', 'active')").run().catch(() => {});
-
-      // Seed Pre-sale Installments
-      await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi1', 'ps1', 'پیش‌پرداخت (عقد قرارداد)', '1403/01/20', 8000000000, 1, '1403/01/20')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi2', 'ps1', 'پایان پی‌ریزی و فونداسیون', '1403/06/15', 2380000000, 0, NULL)").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi3', 'ps1', 'پایان اسکلت و سازه', '1403/09/01', 3570000000, 0, NULL)").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi4', 'ps2', 'پیش‌پرداخت (عقد قرارداد)', '1403/02/01', 15000000000, 1, '1403/02/01')").run().catch(() => {});
-
-      // Seed Materials
-      await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m1', 'میلگرد آجدار سایز ۱۶', 'فلزات', 'تن', 12.5, 29000000)").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m2', 'سیمان تیپ ۲ شیراز', 'مصالح عمومی', 'کیسه', 450, 85000)").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m3', 'شن و ماسه شسته', 'مصالح عمومی', 'کامیون', 14, 1800000)").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m4', 'بلوک لیکا دیواری ۱۵', 'دیوارچینی', 'عدد', 3200, 14000)").run().catch(() => {});
-
-      // Seed Units
-      await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_101', 'p1', 'واحد ۱۰۱', 'اول', 120, 180000000, 21600000000, 'available', NULL, NULL, NULL, '[]')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_102', 'p1', 'واحد ۱۰۲', 'اول', 150, 180000000, 27000000000, 'sold', 'دکتر علوی', 12000000000, NULL, '[]')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_201', 'p1', 'واحد ۲۰۱', 'دوم', 120, 190000000, 22800000000, 'pre_sold', 'خانم دکتر مهدوی', 8000000000, NULL, '[]')").run().catch(() => {});
-      await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_202', 'p1', 'واحد ۲۰۲', 'دوم', 150, 195000000, 29250000000, 'bartered', 'مجموعه آجر نسوز پارس', 10000000000, 'تأمین آجرهای نمای کل پروژه تهاتر شد', '[]')").run().catch(() => {});
     }
   } catch (err) {
-    console.error("Auto-seeding check failed:", err);
+    console.error("Default user check failed:", err);
   }
 }
 
@@ -444,6 +473,8 @@ export default {
         const preSaleInstallmentsQ = await env.DB.prepare("SELECT * FROM pre_sale_installments").all();
         const alertsLogQ = await env.DB.prepare("SELECT * FROM alerts_log").all();
         const usersQ = await env.DB.prepare("SELECT * FROM users").all();
+        const timesheetsQ = await env.DB.prepare("SELECT * FROM timesheets").all().catch(() => ({ results: [] }));
+        const payrollsQ = await env.DB.prepare("SELECT * FROM payrolls").all().catch(() => ({ results: [] }));
 
         // Dynamic Users list mapped back to frontend expectations
         const users = (usersQ.results || []).map(u => ({
@@ -452,7 +483,8 @@ export default {
           role: u.role,
           roleName: u.role_name || u.roleName,
           username: u.username,
-          password: u.password
+          password: u.password,
+          permissions: u.permissions ? JSON.parse(u.permissions) : []
         }));
 
         // Structure results with camelCase mapping
@@ -460,6 +492,7 @@ export default {
           companies: keysToCamel(companiesQ.results || []),
           projects: (projectsQ.results || []).map(p => {
             const camel = keysToCamel(p);
+            camel.isDeleted = p.is_deleted === 1;
             camel.stages = p.stages ? JSON.parse(p.stages) : ["خاک‌برداری", "اسکلت", "سفت‌کاری", "تأسیسات", "نازک‌کاری", "نما", "پایان کار"];
             return camel;
           }),
@@ -485,13 +518,18 @@ export default {
           }),
           units: (unitsQ.results || []).map(u => {
             const camel = keysToCamel(u);
+            camel.isDeleted = u.is_deleted === 1;
             camel.specificExpenses = u.specific_expenses ? JSON.parse(u.specific_expenses) : [];
             return camel;
           }),
           contacts: keysToCamel(contactsQ.results || []),
           imprestFunds: keysToCamel(imprestFundsQ.results || []),
           imprestExpenses: keysToCamel(imprestExpensesQ.results || []),
-          preSales: keysToCamel(preSalesQ.results || []),
+          preSales: (preSalesQ.results || []).map(ps => {
+            const camel = keysToCamel(ps);
+            camel.hasExactArea = ps.has_exact_area === 1;
+            return camel;
+          }),
           preSaleInstallments: (preSaleInstallmentsQ.results || []).map(i => {
             const camel = keysToCamel(i);
             camel.isPaid = i.is_paid === 1;
@@ -500,6 +538,16 @@ export default {
           alertsLog: (alertsLogQ.results || []).map(a => {
             const camel = keysToCamel(a);
             camel.isSent = a.is_sent === 1;
+            return camel;
+          }),
+          timesheets: (timesheetsQ.results || []).map(ts => {
+            const camel = keysToCamel(ts);
+            camel.isPaid = ts.is_paid === 1;
+            return camel;
+          }),
+          payrolls: (payrollsQ.results || []).map(pr => {
+            const camel = keysToCamel(pr);
+            camel.isPaid = pr.is_paid === 1;
             return camel;
           })
         };
@@ -528,7 +576,7 @@ export default {
         const batchQueries = [];
 
         // 1. Delete all existing records
-        const tables = ["companies", "projects", "accounts", "materials", "material_transactions", "transactions", "checks", "units", "contacts", "imprest_funds", "imprest_expenses", "pre_sales", "pre_sale_installments", "alerts_log", "users"];
+        const tables = ["companies", "projects", "accounts", "materials", "material_transactions", "transactions", "checks", "units", "contacts", "imprest_funds", "imprest_expenses", "pre_sales", "pre_sale_installments", "alerts_log", "users", "timesheets", "payrolls"];
         for (const table of tables) {
           batchQueries.push(env.DB.prepare(`DELETE FROM ${table}`));
         }
@@ -542,8 +590,8 @@ export default {
         for (const item of incomingDb.projects || []) {
           const stagesStr = JSON.stringify(item.stages || ["خاک‌برداری", "اسکلت", "سفت‌کاری", "تأسیسات", "نازک‌کاری", "نما", "پایان کار"]);
           batchQueries.push(env.DB.prepare(`
-            INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status, is_deleted, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             item.id,
             item.companyId || "c1",
@@ -553,7 +601,9 @@ export default {
             Number(item.budget || 0),
             stagesStr,
             item.currentStage || "خاک‌برداری",
-            item.status || "active"
+            item.status || "active",
+            item.isDeleted ? 1 : 0,
+            item.deletedAt || null
           ));
         }
 
@@ -590,7 +640,7 @@ export default {
             item.nationalId || null,
             item.bankCardNumber || null,
             Number(item.balance || 0),
-            item.createdAt || "1403/04/03"
+            item.createdAt || getTodayShamsiWorker()
           ));
         }
 
@@ -606,8 +656,8 @@ export default {
             Number(item.allocatedLimit || 0),
             Number(item.balance !== undefined ? item.balance : (item.allocatedLimit || 0)),
             item.status || "active",
-            item.lastReconciliationDate || "1403/04/03",
-            item.createdAt || "1403/04/03"
+            item.lastReconciliationDate || getTodayShamsiWorker(),
+            item.createdAt || getTodayShamsiWorker()
           ));
         }
 
@@ -619,21 +669,21 @@ export default {
           `).bind(
             item.id,
             item.imprestId,
-            item.expenseDate || "1403/04/03",
+            item.expenseDate || getTodayShamsiWorker(),
             Number(item.amount || 0),
             item.description || "",
             item.materialCategory || "سایر",
             item.attachmentUrl || null,
             item.status || "approved",
-            item.createdAt || "1403/04/03"
+            item.createdAt || getTodayShamsiWorker()
           ));
         }
 
         // 8. Insert Pre-Sales
         for (const item of incomingDb.preSales || []) {
           batchQueries.push(env.DB.prepare(`
-            INSERT INTO pre_sales (id, project_id, contact_id, unit_id, contract_area, price_per_meter, total_price, contract_date, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pre_sales (id, project_id, contact_id, unit_id, contract_area, price_per_meter, total_price, contract_date, status, has_exact_area, exact_area, secondary_price_per_meter)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             item.id,
             item.projectId,
@@ -642,16 +692,19 @@ export default {
             Number(item.contractArea || 0),
             Number(item.pricePerMeter || 0),
             Number(item.totalPrice || 0),
-            item.contractDate || "1403/04/03",
-            item.status || "active"
+            item.contractDate || getTodayShamsiWorker(),
+            item.status || "active",
+            item.hasExactArea ? 1 : 0,
+            item.exactArea !== undefined && item.exactArea !== null ? Number(item.exactArea) : null,
+            item.secondaryPricePerMeter !== undefined && item.secondaryPricePerMeter !== null ? Number(item.secondaryPricePerMeter) : null
           ));
         }
 
         // 9. Insert Pre-Sale Installments
         for (const item of incomingDb.preSaleInstallments || []) {
           batchQueries.push(env.DB.prepare(`
-            INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date, paid_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             item.id,
             item.preSaleId,
@@ -659,7 +712,8 @@ export default {
             item.dueDate,
             Number(item.amount || 0),
             item.isPaid ? 1 : 0,
-            item.paidDate || null
+            item.paidDate || null,
+            Number(item.paidAmount || item.amountPaid || 0)
           ));
         }
 
@@ -703,8 +757,8 @@ export default {
           const barterDesc = item.barterDetails ? item.barterDetails.description : null;
           const barterValue = item.barterDetails ? Number(item.barterDetails.agreedValue || 0) : null;
           batchQueries.push(env.DB.prepare(`
-            INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, is_non_cash, barter_property_type, barter_description, barter_agreed_value, attachment_name, attachment_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, is_non_cash, barter_property_type, barter_description, barter_agreed_value, attachment_name, attachment_data, approval_status, approved_amount, approved_by, approved_date, pre_sale_id, contact_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             item.id,
             item.companyId || "c1",
@@ -722,7 +776,13 @@ export default {
             barterDesc,
             barterValue,
             item.attachmentName || null,
-            item.attachmentData || null
+            item.attachmentData || null,
+            item.approvalStatus || "approved",
+            item.approvedAmount !== undefined && item.approvedAmount !== null ? Number(item.approvedAmount) : null,
+            item.approvedBy || null,
+            item.approvedDate || null,
+            item.preSaleId || null,
+            item.contactId || null
           ));
         }
 
@@ -750,8 +810,8 @@ export default {
         for (const item of incomingDb.units || []) {
           const specExpStr = JSON.stringify(item.specificExpenses || []);
           batchQueries.push(env.DB.prepare(`
-            INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses, is_deleted, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             item.id,
             item.projectId,
@@ -764,23 +824,89 @@ export default {
             item.buyerName || null,
             item.downPayment !== null && item.downPayment !== undefined ? Number(item.downPayment) : null,
             item.barterProperty || null,
-            specExpStr
+            specExpStr,
+            item.isDeleted ? 1 : 0,
+            item.deletedAt || null
           ));
         }
 
         // 15. Insert Users
-        if (incomingDb.users && Array.isArray(incomingDb.users)) {
+        if (incomingDb.users && Array.isArray(incomingDb.users) && incomingDb.users.length > 0) {
           for (const item of incomingDb.users) {
             batchQueries.push(env.DB.prepare(`
-              INSERT INTO users (id, name, role, role_name, username, password)
-              VALUES (?, ?, ?, ?, ?, ?)
+              INSERT INTO users (id, name, role, role_name, username, password, permissions)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
             `).bind(
               item.id,
               item.name,
               item.role || "supervisor",
               item.roleName || "ناظر پروژه",
               item.username || null,
-              item.password || null
+              item.password || null,
+              item.permissions ? JSON.stringify(item.permissions) : null
+            ));
+          }
+        } else {
+          batchQueries.push(env.DB.prepare(`
+            INSERT INTO users (id, name, role, role_name, username, password)
+            VALUES ('u1', 'مهندس میلاد فرخی', 'manager', 'مدیر ارشد پروژه', 'admin', 'Miladlar224')
+          `));
+        }
+
+        // 16. Insert Timesheets
+        if (incomingDb.timesheets && Array.isArray(incomingDb.timesheets)) {
+          for (const item of incomingDb.timesheets) {
+            batchQueries.push(env.DB.prepare(`
+              INSERT INTO timesheets (id, project_id, contact_id, person_name, date, hours_worked, overtime_hours, daily_rate, overtime_rate, total_pay, stage, description, is_paid)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              item.id,
+              item.projectId || null,
+              item.contactId || null,
+              item.personName || "",
+              item.date || "",
+              Number(item.hoursWorked || 0),
+              Number(item.overtimeHours || 0),
+              Number(item.dailyRate || 0),
+              Number(item.overtimeRate || 0),
+              Number(item.totalPay || item.totalAmount || 0),
+              item.stage || null,
+              item.description || "",
+              item.isPaid ? 1 : 0
+            ));
+          }
+        }
+
+        // 17. Insert Payrolls
+        if (incomingDb.payrolls && Array.isArray(incomingDb.payrolls)) {
+          for (const item of incomingDb.payrolls) {
+            batchQueries.push(env.DB.prepare(`
+              INSERT INTO payrolls (id, project_id, contact_id, person_name, month, year, base_salary, housing_allowance, food_allowance, child_allowance, overtime_hours, overtime_pay, bonuses, insurance_worker, insurance_employer, tax_deduction, advance_deduction, other_deductions, gross_salary, net_payable, payment_date, account_id, is_paid)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              item.id,
+              item.projectId || null,
+              item.contactId || null,
+              item.personName || "",
+              item.month || "",
+              item.year || "",
+              Number(item.baseSalary || 0),
+              Number(item.housingAllowance || 0),
+              Number(item.foodAllowance || 0),
+              Number(item.childAllowance || 0),
+              Number(item.overtimeHours || 0),
+              Number(item.overtimePay || 0),
+              Number(item.bonuses || 0),
+              Number(item.insuranceWorker || 0),
+              Number(item.insuranceEmployer || 0),
+              Number(item.taxDeduction || 0),
+              Number(item.advanceDeduction || 0),
+              Number(item.otherDeductions || 0),
+              Number(item.grossSalary || 0),
+              Number(item.netPayable || item.amount || 0),
+              item.paymentDate || "",
+              item.accountId || null,
+              item.isPaid ? 1 : 0
             ));
           }
         }
@@ -791,9 +917,17 @@ export default {
           await env.DB.batch(chunk);
         }
 
+        // Automatically record a versioned backup snapshot in D1 with exact date & time
+        let backupSnapshot = null;
+        if (!incomingDb._skipBackupSnapshot) {
+          const sourceLabel = incomingDb._backupSource || "به‌روزرسانی و همگام‌سازی از نسخه آفلاین";
+          backupSnapshot = await createCloudBackupSnapshot(env, incomingDb, sourceLabel);
+        }
+
         return new Response(JSON.stringify({ 
           status: "success", 
-          message: "دیتابیس ابری با داده‌های آفلاین همگام‌سازی و بروز رسانی شد.",
+          message: "دیتابیس ابری با داده‌های آفلاین همگام‌سازی شد و بکاپ نسخه‌بندی‌شده ثبت گردید.",
+          backupVersion: backupSnapshot,
           statistics: {
             projects: incomingDb.projects.length,
             transactions: incomingDb.transactions.length
@@ -801,85 +935,86 @@ export default {
         }), { headers: corsHeaders });
       }
 
-      // 3. Reset/Re-seed D1 database
+      // 2c. List Versioned Cloud Backups (Ordered by Date & Time DESC)
+      if (path === "/api/backups" && method === "GET") {
+        await ensureDatabaseSchema(env);
+        const { results } = await env.DB.prepare(
+          "SELECT id, version_name, shamsi_date, shamsi_time, created_at, source, stats_json FROM backups ORDER BY created_at DESC LIMIT 30"
+        ).all();
+        const versions = (results || []).map(r => {
+          let stats = {};
+          try { stats = r.stats_json ? JSON.parse(r.stats_json) : {}; } catch {}
+          return {
+            id: r.id,
+            versionName: r.version_name,
+            shamsiDate: r.shamsi_date,
+            shamsiTime: r.shamsi_time,
+            createdAt: r.created_at,
+            source: r.source,
+            location: "cloud",
+            stats
+          };
+        });
+        return new Response(JSON.stringify({ status: "success", versions }), { headers: corsHeaders });
+      }
+
+      // 2d. Get Specific Cloud Backup Version Data by ID
+      if (path.startsWith("/api/backups/") && method === "GET") {
+        await ensureDatabaseSchema(env);
+        const versionId = decodeURIComponent(path.substring("/api/backups/".length));
+        const row = await env.DB.prepare("SELECT * FROM backups WHERE id = ?").bind(versionId).first();
+        if (!row) {
+          return new Response(JSON.stringify({ error: "نسخه پشتیبان مورد نظر در فضای ابری یافت نشد" }), { status: 404, headers: corsHeaders });
+        }
+        let dbData = null;
+        let stats = {};
+        try { dbData = JSON.parse(row.db_json); } catch {}
+        try { stats = row.stats_json ? JSON.parse(row.stats_json) : {}; } catch {}
+        return new Response(JSON.stringify({
+          status: "success",
+          version: {
+            id: row.id,
+            versionName: row.version_name,
+            shamsiDate: row.shamsi_date,
+            shamsiTime: row.shamsi_time,
+            createdAt: row.created_at,
+            source: row.source,
+            location: "cloud",
+            stats
+          },
+          db: dbData
+        }), { headers: corsHeaders });
+      }
+
+      // 2e. Create Explicit Cloud Backup Snapshot
+      if (path === "/api/backups" && method === "POST") {
+        await ensureDatabaseSchema(env);
+        const body = await request.json();
+        const dbData = body.db || body;
+        const sourceLabel = body.source || "بکاپ دستی/خودکار در فضای ابری";
+        const snapshot = await createCloudBackupSnapshot(env, dbData, sourceLabel);
+        return new Response(JSON.stringify({ status: "success", backupVersion: snapshot }), { headers: corsHeaders });
+      }
+
+      // 2f. Delete Specific Cloud Backup Version
+      if (path === "/api/backups/delete" && method === "POST") {
+        await ensureDatabaseSchema(env);
+        const { id } = await request.json();
+        await env.DB.prepare("DELETE FROM backups WHERE id = ?").bind(id).run();
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
+      }
+
+      // 3. Reset/Clear D1 database (Empty Default State - No Fake Data)
       if (path === "/api/db/reset" && method === "POST") {
-        // Clear all
-        await env.DB.prepare("DELETE FROM companies").run();
-        await env.DB.prepare("DELETE FROM projects").run();
-        await env.DB.prepare("DELETE FROM accounts").run();
-        await env.DB.prepare("DELETE FROM materials").run();
-        await env.DB.prepare("DELETE FROM material_transactions").run();
-        await env.DB.prepare("DELETE FROM transactions").run();
-        await env.DB.prepare("DELETE FROM checks").run();
-        await env.DB.prepare("DELETE FROM units").run();
-        await env.DB.prepare("DELETE FROM contacts").run();
-        await env.DB.prepare("DELETE FROM imprest_funds").run();
-        await env.DB.prepare("DELETE FROM imprest_expenses").run();
-        await env.DB.prepare("DELETE FROM pre_sales").run();
-        await env.DB.prepare("DELETE FROM pre_sale_installments").run();
-        await env.DB.prepare("DELETE FROM alerts_log").run();
+        await ensureDatabaseSchema(env);
+        const tables = ["companies", "projects", "accounts", "materials", "material_transactions", "transactions", "checks", "units", "contacts", "imprest_funds", "imprest_expenses", "pre_sales", "pre_sale_installments", "alerts_log", "timesheets", "payrolls"];
+        for (const table of tables) {
+          await env.DB.prepare(`DELETE FROM ${table}`).run().catch(() => {});
+        }
+        await env.DB.prepare("DELETE FROM users").run().catch(() => {});
+        await env.DB.prepare("INSERT INTO users (id, name, role, role_name, username, password) VALUES ('u1', 'مهندس میلاد فرخی', 'manager', 'مدیر ارشد پروژه', 'admin', 'Miladlar224')").run().catch(() => {});
 
-        // Seed Companies
-        await env.DB.prepare("INSERT INTO companies (id, name, code) VALUES ('c1', 'شرکت عمرانی رادین سازه شیراز', '10243')").run();
-        await env.DB.prepare("INSERT INTO companies (id, name, code) VALUES ('c2', 'پیشگامان مسکن مهرگان', '55890')").run();
-
-        // Seed Projects
-        const p1Stages = JSON.stringify(["خاک‌برداری و پی‌ریزی", "اسکلت بتنی", "سفت‌کاری و دیوارچینی", "نازک‌کاری و نما", "تأسیسات الکتریکال و مکانیکال", "پایان کار و دکوراسیون داخلی"]);
-        await env.DB.prepare(`
-          INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status)
-          VALUES ('p1', 'c1', 'پروژه مسکونی مروارید نیاوران', 'تهران، نیاوران، خیابان یاسر، پلاک ۱۲', 2400, 48000000000, ?, 'سفت‌کاری و دیوارچینی', 'active')
-        `).bind(p1Stages).run();
-
-        const p2Stages = JSON.stringify(["پایدارسازی و نیلینگ", "فونداسیون", "اسکلت فلزی پیچ و مهره", "سفت‌کاری", "تأسیسات و اطفاء حریق", "شیشه‌گذاری و دکوراسیون"]);
-        await env.DB.prepare(`
-          INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status)
-          VALUES ('p2', 'c1', 'مجتمع تجاری آرامش سعادت‌آباد', 'تهران، سعادت‌آباد، میدان کاج، نبش خیابان نهم', 5500, 120000000000, ?, 'اسکلت فلزی پیچ و مهره', 'active')
-        `).bind(p2Stages).run();
-
-        // Seed Accounts with standard codes
-        await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, account_number, bank_name, balance, code, level, parent_code, nature) VALUES ('a1', 'بانک ملی - جاری کارفرما (۱۴۰۲)', 'bank', 'بانک تجاری', '0105432109002', 'ملی ایران', 14200000000, '101001', 3, '101', 'debtor')").run();
-        await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, account_number, bank_name, balance, code, level, parent_code, nature) VALUES ('a2', 'بانک سامان - حساب مرکزی پشتیبان', 'bank', 'بانک تجاری', '844-3210-993-1', 'سامان', 28500000000, '101002', 3, '101', 'debtor')").run();
-        await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, balance, code, level, parent_code, nature) VALUES ('a3', 'صندوق تنخواه کارگاه (مهندس اکبری)', 'petty_cash', 'تنخواه گردان کارگاه', 45000000, '101003', 3, '101', 'debtor')").run();
-        await env.DB.prepare("INSERT INTO accounts (id, name, type, type_name, balance, code, level, parent_code, nature) VALUES ('a4', 'علی عباسی (سرمایه‌گذار شریک)', 'investor', 'حساب سرمایه‌گذار', -8000000000, '301001', 3, '301', 'creditor')").run();
-
-        // Seed Contacts
-        await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, bank_card_number, balance, created_at) VALUES ('co1', 'خانم دکتر مهدوی', '09121111111', 'pre_buyer', '0012233445', '6037991122334455', 23800000000, '1403/01/20')").run();
-        await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, bank_card_number, balance, created_at) VALUES ('co2', 'مهندس شفیعی', '09122222222', 'pre_buyer', '0022233446', '6104332211005544', 30400000000, '1403/02/01')").run();
-        await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co3', 'شرکت فلزات آریا', '02188888888', 'subcontractor', '10100293810', -8000000000, '1403/01/10')").run();
-        await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co4', 'صنایع بتن تهران کادوس', '02144444444', 'supplier', '14002931201', -1800000000, '1403/01/15')").run();
-        await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co5', 'مهندس علیرضا اکبری', '09123333333', 'imprest_holder', '0033344556', 450000000, '1403/01/10')").run();
-        await env.DB.prepare("INSERT INTO contacts (id, name, phone, role, national_id, balance, created_at) VALUES ('co6', 'مهندس کریمی', '09124444444', 'imprest_holder', '0044455667', 350000000, '1403/01/12')").run();
-
-        // Seed Imprest Funds
-        await env.DB.prepare("INSERT INTO imprest_funds (id, project_id, contact_id, allocated_limit, balance, status, last_reconciliation_date, created_at) VALUES ('im1', 'p1', 'co5', 500000000, 450000000, 'active', '1403/01/10', '1403/01/10')").run();
-        await env.DB.prepare("INSERT INTO imprest_funds (id, project_id, contact_id, allocated_limit, balance, status, last_reconciliation_date, created_at) VALUES ('im2', 'p2', 'co6', 400000000, 350000000, 'active', '1403/01/12', '1403/01/12')").run();
-
-        // Seed Imprest Expenses
-        await env.DB.prepare("INSERT INTO imprest_expenses (id, imprest_id, expense_date, amount, description, material_category, status, created_at) VALUES ('ie1', 'im1', '1403/02/12', 50000000, 'خرید لوله اتصالات پلیکا فاضلابی کارگاه', 'تأسیسات', 'approved', '1403/02/12')").run();
-
-        // Seed Pre-sales
-        await env.DB.prepare("INSERT INTO pre_sales (id, project_id, contact_id, unit_id, contract_area, price_per_meter, total_price, contract_date, status) VALUES ('ps1', 'p1', 'co1', 'u_102', 140, 170000000, 23800000000, '1403/01/20', 'active')").run();
-        await env.DB.prepare("INSERT INTO pre_sales (id, project_id, contact_id, unit_id, contract_area, price_per_meter, total_price, contract_date, status) VALUES ('ps2', 'p1', 'co2', 'u_201', 160, 190000000, 30400000000, '1403/02/01', 'active')").run();
-
-        // Seed Pre-sale Installments
-        await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi1', 'ps1', 'پیش‌پرداخت (عقد قرارداد)', '1403/01/20', 8000000000, 1, '1403/01/20')").run();
-        await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi2', 'ps1', 'پایان پی‌ریزی و فونداسیون', '1403/06/15', 2380000000, 0, NULL)").run();
-        await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi3', 'ps1', 'پایان اسکلت و سازه', '1403/09/01', 3570000000, 0, NULL)").run();
-        await env.DB.prepare("INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date) VALUES ('psi4', 'ps2', 'پیش‌پرداخت (عقد قرارداد)', '1403/02/01', 15000000000, 1, '1403/02/01')").run();
-
-        // Seed Materials
-        await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m1', 'میلگرد آجدار سایز ۱۶', 'فلزات', 'تن', 12.5, 29000000)").run();
-        await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m2', 'سیمان تیپ ۲ شیراز', 'مصالح عمومی', 'کیسه', 450, 85000)").run();
-        await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m3', 'شن و ماسه شسته', 'مصالح عمومی', 'کامیون', 14, 1800000)").run();
-        await env.DB.prepare("INSERT INTO materials (id, name, category, unit, stock, average_price) VALUES ('m4', 'بلوک لیکا دیواری ۱۵', 'دیوارچینی', 'عدد', 3200, 14000)").run();
-
-        // Seed Units
-        await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_101', 'p1', 'واحد ۱۰۱', 'اول', 120, 180000000, 21600000000, 'available', NULL, NULL, NULL, '[]')").run();
-        await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_102', 'p1', 'واحد ۱۰۲', 'اول', 150, 180000000, 27000000000, 'sold', 'دکتر علوی', 12000000000, NULL, '[]')").run();
-        await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_201', 'p1', 'واحد ۲۰۱', 'دوم', 120, 190000000, 22800000000, 'pre_sold', 'خانم دکتر مهدوی', 8000000000, NULL, '[]')").run();
-        await env.DB.prepare("INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses) VALUES ('u_202', 'p1', 'واحد ۲۰۲', 'دوم', 150, 195000000, 29250000000, 'bartered', 'مجموعه آجر نسوز پارس', 10000000000, 'تأمین آجرهای نمای کل پروژه تهاتر شد', '[]')").run();
-
-        return new Response(JSON.stringify({ status: "success", message: "پایگاه داده زنده کلودفلر باموفقیت راه‌اندازی شد." }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ status: "success", message: "پایگاه داده ابری کلودفلر به صورت کامل پاکسازی و خالی شد." }), { headers: corsHeaders });
       }
 
       // 3.5 Create or Update Company
@@ -1093,6 +1228,20 @@ export default {
       if (path === "/api/checks/delete" && method === "POST") {
         const body = await request.json();
         const { id } = body;
+        const chk = await env.DB.prepare("SELECT * FROM checks WHERE id = ?").bind(id).first();
+        if (chk && chk.status === "passed") {
+          const { results: matchedTxs } = await env.DB.prepare(
+            "SELECT * FROM transactions WHERE category = 'پاس شدن چک' AND amount = ? AND description LIKE ?"
+          ).bind(chk.amount, `%${chk.check_number}%`).all();
+          if (matchedTxs && matchedTxs.length > 0) {
+            const tx = matchedTxs[0];
+            if (tx.account_id) {
+              const revDiff = tx.type === "expense" ? Number(tx.amount) : -Number(tx.amount);
+              await env.DB.prepare("UPDATE accounts SET balance = balance + ? WHERE id = ?").bind(revDiff, tx.account_id).run();
+            }
+            await env.DB.prepare("DELETE FROM transactions WHERE id = ?").bind(tx.id).run();
+          }
+        }
         await env.DB.prepare("DELETE FROM checks WHERE id = ?").bind(id).run();
         return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
       }
@@ -1130,11 +1279,18 @@ export default {
         const { results: expenses } = await env.DB.prepare("SELECT * FROM imprest_expenses WHERE id = ?").bind(id).all();
         if (expenses && expenses.length > 0) {
           const expense = expenses[0];
+          const amount = Number(expense.amount || 0);
           const { results: funds } = await env.DB.prepare("SELECT * FROM imprest_funds WHERE id = ?").bind(expense.imprest_id).all();
           if (funds && funds.length > 0) {
             const fund = funds[0];
-            const amount = Number(expense.amount || 0);
             await env.DB.prepare("UPDATE imprest_funds SET balance = balance + ? WHERE id = ?").bind(amount, fund.id).run();
+          }
+          const tx = await env.DB.prepare("SELECT * FROM transactions WHERE id = ?").bind("t_im_exp_" + id).first();
+          if (tx) {
+            if (tx.account_id) {
+              await env.DB.prepare("UPDATE accounts SET balance = balance + ? WHERE id = ?").bind(amount, tx.account_id).run();
+            }
+            await env.DB.prepare("DELETE FROM transactions WHERE id = ?").bind(tx.id).run();
           }
           await env.DB.prepare("DELETE FROM imprest_expenses WHERE id = ?").bind(id).run();
           return new Response(JSON.stringify({ status: "success", message: "هزینه تنخواه با موفقیت حذف شد" }), { headers: corsHeaders });
@@ -1151,6 +1307,12 @@ export default {
         if (preSales && preSales.length > 0) {
           const presale = preSales[0];
           await env.DB.prepare("UPDATE units SET status = 'available', buyer_name = NULL, down_payment = NULL WHERE id = ?").bind(presale.unit_id).run();
+          const { results: paidInsts } = await env.DB.prepare("SELECT * FROM pre_sale_installments WHERE pre_sale_id = ? AND is_paid = 1").bind(id).all();
+          const totalPaid = (paidInsts || []).reduce((sum, i) => sum + Number(i.amount || 0), 0);
+          const remainingDebt = Math.max(0, Number(presale.total_price || 0) - totalPaid);
+          if (presale.contact_id) {
+            await env.DB.prepare("UPDATE contacts SET balance = MAX(0, balance - ?) WHERE id = ?").bind(remainingDebt, presale.contact_id).run();
+          }
           await env.DB.prepare("DELETE FROM pre_sale_installments WHERE pre_sale_id = ?").bind(id).run();
           await env.DB.prepare("DELETE FROM pre_sales WHERE id = ?").bind(id).run();
 
@@ -1158,6 +1320,103 @@ export default {
         } else {
           return new Response(JSON.stringify({ error: "قرارداد پیش‌فروش یافت نشد" }), { status: 404, headers: corsHeaders });
         }
+      }
+
+      // Update Pre-Sale Exact Area & Secondary Price (Deed settlement)
+      if (path === "/api/presales/update-area" && method === "POST") {
+        const body = await request.json();
+        const { id, exactArea, secondaryPricePerMeter, hasExactArea } = body;
+        const presale = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(id).first();
+        if (!presale) {
+          return new Response(JSON.stringify({ error: "قرارداد پیش‌فروش یافت نشد" }), { status: 404, headers: corsHeaders });
+        }
+
+        const prevTotalPrice = Number(presale.total_price || 0);
+        const contractArea = Number(presale.contract_area || 0);
+        const pricePerMeter = Number(presale.price_per_meter || 0);
+
+        let newTotalPrice = Math.round(contractArea * pricePerMeter);
+        let exactAreaVal = null;
+        let secPriceVal = null;
+        const hasExactVal = hasExactArea ? 1 : 0;
+
+        if (hasExactArea) {
+          exactAreaVal = Number(exactArea || contractArea);
+          secPriceVal = Number(secondaryPricePerMeter || pricePerMeter);
+          const diffArea = exactAreaVal - contractArea;
+          const adjustment = diffArea * secPriceVal;
+          newTotalPrice = Math.round((contractArea * pricePerMeter) + adjustment);
+        }
+
+        const diffAmount = newTotalPrice - prevTotalPrice;
+
+        await env.DB.prepare(`
+          UPDATE pre_sales
+          SET has_exact_area = ?, exact_area = ?, secondary_price_per_meter = ?, total_price = ?
+          WHERE id = ?
+        `).bind(hasExactVal, exactAreaVal, secPriceVal, newTotalPrice, id).run();
+
+        if (hasExactArea && exactAreaVal) {
+          await env.DB.prepare("UPDATE units SET area = ?, total_price = ? WHERE id = ?")
+            .bind(exactAreaVal, newTotalPrice, presale.unit_id).run();
+        }
+
+        // Adjust deed/final installment
+        const { results: insts } = await env.DB.prepare("SELECT * FROM pre_sale_installments WHERE pre_sale_id = ? ORDER BY due_date ASC").bind(id).all();
+        if (insts && insts.length > 0) {
+          let targetInst = insts.find(i =>
+            (i.installment_name || "").includes("سند") ||
+            (i.installment_name || "").includes("دفترخانه") ||
+            (i.installment_name || "").includes("نهایی")
+          ) || insts[insts.length - 1];
+          const updatedInstAmount = Math.max(0, Number(targetInst.amount || 0) + diffAmount);
+          await env.DB.prepare("UPDATE pre_sale_installments SET amount = ? WHERE id = ?").bind(updatedInstAmount, targetInst.id).run();
+        }
+
+        if (presale.contact_id) {
+          await env.DB.prepare("UPDATE contacts SET balance = MAX(0, COALESCE(balance, 0) + ?) WHERE id = ?")
+            .bind(diffAmount, presale.contact_id).run();
+        }
+
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
+      }
+
+      // Add Custom Pre-Sale Installment
+      if (path === "/api/presales/installments/add" && method === "POST") {
+        const body = await request.json();
+        const { preSaleId, installmentName, dueDate, amount } = body;
+        const instId = "psi_custom_" + Date.now();
+        await env.DB.prepare(`
+          INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date)
+          VALUES (?, ?, ?, ?, ?, 0, NULL)
+        `).bind(instId, preSaleId, installmentName, dueDate, Number(amount || 0)).run();
+
+        const presale = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(preSaleId).first();
+        if (presale && presale.contact_id) {
+          await env.DB.prepare("UPDATE contacts SET balance = COALESCE(balance, 0) + ? WHERE id = ?")
+            .bind(Number(amount || 0), presale.contact_id).run();
+        }
+        return new Response(JSON.stringify({ status: "success", id: instId }), { headers: corsHeaders });
+      }
+
+      // Edit Pre-Sale Installment
+      if (path === "/api/presales/installments/edit" && method === "POST") {
+        const body = await request.json();
+        const { installmentId, installmentName, dueDate, amount } = body;
+        const inst = await env.DB.prepare("SELECT * FROM pre_sale_installments WHERE id = ?").bind(installmentId).first();
+        if (!inst) {
+          return new Response(JSON.stringify({ error: "قسط یافت نشد" }), { status: 404, headers: corsHeaders });
+        }
+        const diff = Number(amount || inst.amount) - Number(inst.amount || 0);
+        await env.DB.prepare("UPDATE pre_sale_installments SET installment_name = ?, due_date = ?, amount = ? WHERE id = ?")
+          .bind(installmentName || inst.installment_name, dueDate || inst.due_date, Number(amount || inst.amount), installmentId).run();
+
+        const presale = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(inst.pre_sale_id).first();
+        if (presale && presale.contact_id) {
+          await env.DB.prepare("UPDATE contacts SET balance = MAX(0, COALESCE(balance, 0) + ?) WHERE id = ?")
+            .bind(diff, presale.contact_id).run();
+        }
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
       }
 
       // Delete Pre-Sale Installment
@@ -1597,23 +1856,22 @@ export default {
         }
       }
 
-      // 9. Update Unit Details / Record specific unit expenses
+      // 9. Update Unit Details / Record specific unit expenses / Create New Unit
       if (path === "/api/units" && method === "POST") {
         const body = await request.json();
         const unitId = body.id;
 
-        const { results } = await env.DB.prepare("SELECT * FROM units WHERE id = ?").bind(unitId).all();
+        const { results } = unitId ? await env.DB.prepare("SELECT * FROM units WHERE id = ?").bind(unitId).all() : { results: [] };
         if (results && results.length > 0) {
           const currentUnit = results[0];
           let currentExpenses = currentUnit.specific_expenses ? JSON.parse(currentUnit.specific_expenses) : [];
 
           if (body.addExpense) {
-            // Adding dynamic unit-specific expense
             const newExp = {
               id: "ue_" + Date.now(),
               title: body.addExpense.title,
               amount: Number(body.addExpense.amount || 0),
-              date: body.addExpense.date
+              date: body.addExpense.date || getTodayShamsiWorker()
             };
             currentExpenses.push(newExp);
 
@@ -1621,22 +1879,35 @@ export default {
               .bind(JSON.stringify(currentExpenses), unitId)
               .run();
 
-            // Deduct from builder's primary account to simulate spending
-            await env.DB.prepare("UPDATE accounts SET balance = balance - ? WHERE id = 'a3'")
-              .bind(Number(body.addExpense.amount || 0))
+            const accId = body.addExpense.accountId || "a2";
+            await env.DB.prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?")
+              .bind(Number(body.addExpense.amount || 0), accId)
               .run();
 
             return new Response(JSON.stringify({ status: "success", expense: newExp }), { headers: corsHeaders });
           } else {
-            // Updating standard unit parameters
+            const newArea = body.area !== undefined ? Number(body.area) : Number(currentUnit.area || 0);
+            const newPricePerMeter = body.pricePerMeter !== undefined ? Number(body.pricePerMeter) : Number(currentUnit.price_per_meter || 0);
+            const newTotalPrice = newArea * newPricePerMeter;
+
             await env.DB.prepare(`
               UPDATE units SET
+                unit_number = ?,
+                floor = ?,
+                area = ?,
+                price_per_meter = ?,
+                total_price = ?,
                 status = ?,
                 buyer_name = ?,
                 down_payment = ?,
                 barter_property = ?
               WHERE id = ?
             `).bind(
+              body.unitNumber !== undefined ? body.unitNumber : currentUnit.unit_number,
+              body.floor !== undefined ? body.floor : currentUnit.floor,
+              newArea,
+              newPricePerMeter,
+              newTotalPrice,
               body.status || currentUnit.status,
               body.buyerName !== undefined ? body.buyerName : currentUnit.buyer_name,
               body.downPayment !== undefined ? Number(body.downPayment || 0) : currentUnit.down_payment,
@@ -1646,8 +1917,30 @@ export default {
 
             return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
           }
+        } else {
+          // Create new unit
+          const newId = "u_" + (body.projectId || "p1") + "_" + (body.unitNumber || Date.now());
+          const areaVal = Number(body.area || 0);
+          const ppmVal = Number(body.pricePerMeter || 0);
+          await env.DB.prepare(`
+            INSERT INTO units (id, project_id, unit_number, floor, area, price_per_meter, total_price, status, buyer_name, down_payment, barter_property, specific_expenses)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]')
+          `).bind(
+            newId,
+            body.projectId || "p1",
+            body.unitNumber || "واحد جدید",
+            body.floor || "اول",
+            areaVal,
+            ppmVal,
+            areaVal * ppmVal,
+            body.status || "available",
+            body.buyerName || null,
+            Number(body.downPayment || 0),
+            body.barterProperty || null
+          ).run();
+
+          return new Response(JSON.stringify({ status: "success", id: newId }), { headers: corsHeaders });
         }
-        return new Response(JSON.stringify({ error: "Unit not found" }), { status: 404, headers: corsHeaders });
       }
 
       // 9b. Add or Update Contact
@@ -1938,6 +2231,96 @@ export default {
           todayShamsi
         ).run();
 
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
+      }
+
+      // 9g-2. Timesheets & Payrolls Endpoints
+      if (path === "/api/timesheets" && method === "POST") {
+        await ensureDatabaseSchema(env);
+        const body = await request.json();
+        const id = body.id || "ts_" + Date.now();
+        await env.DB.prepare(`
+          INSERT INTO timesheets (id, project_id, contact_id, person_name, date, hours_worked, overtime_hours, daily_rate, overtime_rate, total_pay, stage, description, is_paid)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            project_id=excluded.project_id,
+            contact_id=excluded.contact_id,
+            person_name=excluded.person_name,
+            date=excluded.date,
+            hours_worked=excluded.hours_worked,
+            overtime_hours=excluded.overtime_hours,
+            daily_rate=excluded.daily_rate,
+            overtime_rate=excluded.overtime_rate,
+            total_pay=excluded.total_pay,
+            stage=excluded.stage,
+            description=excluded.description,
+            is_paid=excluded.is_paid
+        `).bind(
+          id,
+          body.projectId,
+          body.contactId || null,
+          body.personName || "",
+          body.date || getTodayShamsiWorker(),
+          Number(body.hoursWorked || 0),
+          Number(body.overtimeHours || 0),
+          Number(body.dailyRate || 0),
+          Number(body.overtimeRate || 0),
+          Number(body.totalPay || 0),
+          body.stage || "سفت‌کاری",
+          body.description || "",
+          body.isPaid ? 1 : 0
+        ).run();
+        return new Response(JSON.stringify({ status: "success", id }), { headers: corsHeaders });
+      }
+
+      if (path === "/api/timesheets/delete" && method === "POST") {
+        const body = await request.json();
+        await env.DB.prepare("DELETE FROM timesheets WHERE id = ?").bind(body.id).run();
+        return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
+      }
+
+      if (path === "/api/payrolls" && method === "POST") {
+        await ensureDatabaseSchema(env);
+        const body = await request.json();
+        const id = body.id || "pr_" + Date.now();
+        await env.DB.prepare(`
+          INSERT INTO payrolls (id, project_id, contact_id, person_name, month, year, base_salary, housing_allowance, food_allowance, child_allowance, overtime_hours, overtime_pay, bonuses, insurance_worker, insurance_employer, tax_deduction, advance_deduction, other_deductions, gross_salary, net_payable, payment_date, account_id, is_paid)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            is_paid=excluded.is_paid,
+            net_payable=excluded.net_payable,
+            gross_salary=excluded.gross_salary
+        `).bind(
+          id,
+          body.projectId,
+          body.contactId || null,
+          body.personName || "",
+          body.month || "",
+          body.year || "",
+          Number(body.baseSalary || 0),
+          Number(body.housingAllowance || 0),
+          Number(body.foodAllowance || 0),
+          Number(body.childAllowance || 0),
+          Number(body.overtimeHours || 0),
+          Number(body.overtimePay || 0),
+          Number(body.bonuses || 0),
+          Number(body.insuranceWorker || 0),
+          Number(body.insuranceEmployer || 0),
+          Number(body.taxDeduction || 0),
+          Number(body.advanceDeduction || 0),
+          Number(body.otherDeductions || 0),
+          Number(body.grossSalary || 0),
+          Number(body.netPayable || 0),
+          body.paymentDate || getTodayShamsiWorker(),
+          body.accountId || "a1",
+          body.isPaid ? 1 : 0
+        ).run();
+        return new Response(JSON.stringify({ status: "success", id }), { headers: corsHeaders });
+      }
+
+      if (path === "/api/payrolls/delete" && method === "POST") {
+        const body = await request.json();
+        await env.DB.prepare("DELETE FROM payrolls WHERE id = ?").bind(body.id).run();
         return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
       }
 
