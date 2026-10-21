@@ -163,6 +163,15 @@ const electronPackageJson = `{
       "target": "nsis",
       "icon": "icon.ico"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "سامانه حسابداری سازه"
+    },
     "directories": {
       "output": "release"
     }
@@ -713,16 +722,45 @@ export default function DeveloperKit({ cfEnabled, cfUrl, onToggleCf, onUpdateUrl
               </p>
 
               <div className="space-y-3">
+                <div className="p-2.5 bg-indigo-50/70 border border-indigo-100 rounded-xl text-[11px] text-indigo-800 font-semibold leading-relaxed">
+                  💡 در فایل نصبی ویندوز (<code className="font-mono font-bold">.exe</code>) امکان انتخاب دلخواه مسیر نصب نرم‌افزار در هر درایو و پوشه‌ای فعال شده است. همچنین از بخش زیر می‌توانید مسیر نصب و نگهداری دیتابیس آفلاین را در هر زمان تغییر دهید:
+                </div>
+
                 <div className="space-y-1">
-                  <label className="text-[10px] text-slate-500 font-bold block">مسیر ذخیره پایگاه داده (db.json):</label>
-                  <input 
-                    type="text" 
-                    value={dbPath}
-                    onChange={(e) => setDbPath(e.target.value)}
-                    dir="ltr"
-                    placeholder="مثال: C:\SazeAccounting\db.json"
-                    className="w-full p-2 border border-slate-200 rounded-xl font-mono text-[11px] bg-slate-50 focus:outline-none focus:border-indigo-500 transition-colors"
-                  />
+                  <label className="text-[10px] text-slate-500 font-bold block">مسیر نصب و ذخیره پایگاه داده آفلاین (db.json):</label>
+                  <div className="flex gap-1.5">
+                    <input 
+                      type="text" 
+                      value={dbPath}
+                      onChange={(e) => setDbPath(e.target.value)}
+                      dir="ltr"
+                      placeholder="مثال: D:\HesabdarSazeh\db.json"
+                      className="flex-1 p-2 border border-slate-200 rounded-xl font-mono text-[11px] bg-slate-50 focus:outline-none focus:border-indigo-500 transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const electron = (window as any).require ? (window as any).require("electron") : null;
+                          if (electron && electron.ipcRenderer) {
+                            const selectedDir = await electron.ipcRenderer.invoke("select-directory");
+                            if (selectedDir) {
+                              const sep = selectedDir.includes("\\") ? "\\" : "/";
+                              setDbPath(`${selectedDir.replace(/[\\/]$/, "")}${sep}db.json`);
+                              setUploadsPath(`${selectedDir.replace(/[\\/]$/, "")}${sep}uploads`);
+                            }
+                          } else {
+                            alert("در نسخه نصبی ویندوز (EXE) پنجره انتخاب پوشه ویندوز باز می‌شود. در مرورگر می‌توانید مسیر دلخواه (مثلاً D:\\HesabdarSazeh\\db.json) را تایپ نمایید.");
+                          }
+                        } catch {
+                          // Ignore
+                        }
+                      }}
+                      className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-[10px] font-bold shrink-0 cursor-pointer"
+                    >
+                      انتخاب پوشه...
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-1">
@@ -732,7 +770,7 @@ export default function DeveloperKit({ cfEnabled, cfUrl, onToggleCf, onUpdateUrl
                     value={uploadsPath}
                     onChange={(e) => setUploadsPath(e.target.value)}
                     dir="ltr"
-                    placeholder="مثال: C:\SazeAccounting\uploads"
+                    placeholder="مثال: D:\HesabdarSazeh\uploads"
                     className="w-full p-2 border border-slate-200 rounded-xl font-mono text-[11px] bg-slate-50 focus:outline-none focus:border-indigo-500 transition-colors"
                   />
                 </div>

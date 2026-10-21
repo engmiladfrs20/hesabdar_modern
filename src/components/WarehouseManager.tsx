@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Material, MaterialTransaction, Project } from "../types";
 import { getTodayShamsiString } from "../utils/shamsi";
+import { toEnglishDigits } from "../utils/digits";
 import { Package, Search, Plus, ArrowUpRight, ArrowDownRight, Archive, Tag, ClipboardList, Layers, HelpCircle, Edit, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { CONSTRUCTION_STAGES } from "../data/constructionStages";
@@ -57,6 +58,18 @@ export default function WarehouseManager({
   const [txPrice, setTxPrice] = useState("");
   const [txPerson, setTxPerson] = useState("");
   const [txDesc, setTxDesc] = useState("");
+
+  useEffect(() => {
+    if (projects.length > 0 && (!txProjId || !projects.some(p => p.id === txProjId))) {
+      setTxProjId(projects[0].id);
+    }
+  }, [projects, txProjId]);
+
+  useEffect(() => {
+    if (materials.length > 0 && (!txMatId || !materials.some(m => m.id === txMatId))) {
+      setTxMatId(materials[0].id);
+    }
+  }, [materials, txMatId]);
 
   const formatTomans = (num: number) => {
     return new Intl.NumberFormat("fa-IR").format(num) + " ریال";
@@ -374,12 +387,12 @@ export default function WarehouseManager({
                   <div className="space-y-1.5">
                     <label className="text-slate-600 font-bold">ضریب تبدیل واحد فرعی به اصلی</label>
                     <input 
-                      type="number" 
-                      step="any"
+                      type="text" 
+                      inputMode="decimal"
                       placeholder="مثال: ۲۵ (۲۵ کیسه در هر تن)"
                       value={matConversionFactor}
-                      onChange={e => setMatConversionFactor(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500"
+                      onChange={e => setMatConversionFactor(toEnglishDigits(e.target.value).replace(/[^0-9.]/g, ""))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500 font-mono"
                     />
                   </div>
 
@@ -401,11 +414,12 @@ export default function WarehouseManager({
                   <div className="space-y-1.5">
                     <label className="text-slate-600 font-bold">موجودی انبار اولیه</label>
                     <input 
-                      type="number" 
+                      type="text" 
+                      inputMode="decimal"
                       placeholder="مثال: ۱۰۰"
                       value={matStock}
-                      onChange={e => setMatStock(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500"
+                      onChange={e => setMatStock(toEnglishDigits(e.target.value).replace(/[^0-9.]/g, ""))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500 font-mono"
                     />
                   </div>
 
@@ -413,11 +427,12 @@ export default function WarehouseManager({
                   <div className="space-y-1.5">
                     <label className="text-slate-600 font-bold">حداقل موجودی مجاز (آلارم کسری انبار)</label>
                     <input 
-                      type="number" 
+                      type="text" 
+                      inputMode="decimal"
                       placeholder="مثال: ۱۰"
                       value={matMinStock}
-                      onChange={e => setMatMinStock(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500"
+                      onChange={e => setMatMinStock(toEnglishDigits(e.target.value).replace(/[^0-9.]/g, ""))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500 font-mono"
                     />
                   </div>
 
@@ -521,11 +536,12 @@ export default function WarehouseManager({
                 <div className="space-y-1.5">
                   <label className="text-slate-500 font-medium">مقدار / تعداد</label>
                   <input 
-                    type="number" 
+                    type="text" 
+                    inputMode="decimal"
                     placeholder="مثال: ۵۰"
                     value={txQty}
-                    onChange={e => setTxQty(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500"
+                    onChange={e => setTxQty(toEnglishDigits(e.target.value).replace(/[^0-9.]/g, ""))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-amber-500 font-mono"
                     required
                   />
                 </div>

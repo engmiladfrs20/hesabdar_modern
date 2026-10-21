@@ -15,9 +15,9 @@ export interface Project {
   currentStage: string;
   status: "active" | "completed" | "paused";
   supervisorName?: string;
-  numberOfUnits?: number; // تعداد واحدهای پروژه
-  defaultUnitArea?: number; // متراژ هر واحد
-  defaultUnitPrice?: number; // قیمت هر متر واحد
+  numberOfUnits?: number;
+  defaultUnitArea?: number;
+  defaultUnitPrice?: number;
   isDeleted?: boolean;
   deletedAt?: string;
 }
@@ -47,93 +47,6 @@ export interface Account {
   projectId?: string;
 }
 
-export interface Contact {
-  id: string;
-  name: string;
-  phone: string;
-  role: string;
-  roleName?: string;
-  nationalId?: string;
-  bankCardNumber?: string;
-  bankName?: string;
-  bankIBAN?: string; // شماره شبا
-  jobCategory?: string; // نوع صنف کاری
-  paymentMethod?: "cash" | "barter"; // نقدی یا تهاتر
-  barterUnits?: { unitId: string; area: number; price: number; selectionType?: "specific" | "scoring" }[]; // واحدهای تهاتر شده
-  roles?: string[]; // نقش‌های چندگانه طرف حساب
-  balance: number;
-  createdAt?: string;
-  projectId?: string; // پروژه مورد نظر در صورت تهاتر یا ارتباط مستقیم
-}
-
-export interface ImprestFund {
-  id: string;
-  projectId: string;
-  contactId: string;
-  allocatedLimit: number;
-  balance: number;
-  status: "active" | "locked" | "closed";
-  lastReconciliationDate?: string;
-  createdAt: string;
-}
-
-export interface ImprestExpense {
-  id: string;
-  imprestId: string;
-  expenseDate: string;
-  amount: number;
-  description: string;
-  materialCategory?: string;
-  attachmentUrl?: string;
-  status: "pending" | "approved" | "rejected";
-  createdAt?: string;
-  contactId?: string;
-  personName?: string;
-  stage?: string;
-  paymentStatus?: "unpaid" | "partially_paid" | "paid";
-  payments?: TransactionPayment[];
-  attachmentName?: string;
-  attachmentData?: string;
-}
-
-export interface PreSale {
-  id: string;
-  projectId: string;
-  contactId: string;
-  unitId: string;
-  contractArea: number;
-  pricePerMeter: number;
-  totalPrice: number;
-  contractDate: string;
-  status: "active" | "completed" | "canceled";
-  isScoringPending?: boolean;
-  exactArea?: number; // متراژ دقیق سند
-  secondaryPricePerMeter?: number; // قیمت هر متر مربع برای مازاد یا کسری متراژ
-  hasExactArea?: boolean; // نشان‌دهنده ثبت متراژ دقیق
-}
-
-export interface PreSaleInstallment {
-  id: string;
-  preSaleId: string;
-  installmentName: string;
-  dueDate: string;
-  amount: number;
-  isPaid: boolean;
-  paidDate?: string;
-  amountPaid?: number;
-  percentPaid?: number;
-}
-
-export interface AlertLog {
-  id: string;
-  type: "installment" | "check" | "imprest_lock";
-  referenceId: string;
-  recipientPhone: string;
-  message: string;
-  sendDate: string;
-  isSent: boolean;
-}
-
 export interface Material {
   id: string;
   name: string;
@@ -141,14 +54,14 @@ export interface Material {
   unit: string;
   stock: number;
   averagePrice: number;
-  code?: string; // کد کالا
-  subCategory?: string; // زیرگروه کالا
-  secondaryUnit?: string; // واحد فرعی
-  conversionFactor?: number; // ضریب تبدیل واحد
-  consumptionType?: "concrete" | "steel" | "common"; // نوع مصرف (بتنی / فلزی / مشترک)
-  minStock?: number; // حداقل موجودی
-  purchasePrice?: number; // نرخ خرید
-  projectId?: string; // پروژه مصرف‌کننده
+  code?: string;
+  subCategory?: string;
+  secondaryUnit?: string;
+  conversionFactor?: number;
+  consumptionType?: "concrete" | "steel" | "common";
+  minStock?: number;
+  purchasePrice?: number;
+  projectId?: string;
 }
 
 export interface MaterialTransaction {
@@ -165,15 +78,18 @@ export interface MaterialTransaction {
 
 export interface TransactionPayment {
   id: string;
+  rowNumber?: number | string;
   amount: number;
   date: string;
-  accountId: string;
-  referenceNumber: string; // شماره سند پرداخت / فیش
-  settlementMethod?: string; // روش تسویه
-  paymentStatus?: string; // وضعیت پرداخت
-  destinationAccount?: string; // شماره حساب واریزی
-  receiptFileName?: string; // پیوست فیزیکی فیش واریزی
-  receiptFileData?: string; // داده تصویر فیش واریزی
+  accountId?: string;
+  referenceNumber?: string;
+  invoiceNumber?: string;
+  invoiceDescription?: string;
+  settlementMethod?: string;
+  paymentStatus?: string;
+  destinationAccount?: string;
+  receiptFileName?: string;
+  receiptFileData?: string;
   description?: string;
 }
 
@@ -189,6 +105,7 @@ export interface Transaction {
   personName: string;
   date: string;
   description: string;
+  invoiceNumber?: string;
   isNonCash: boolean;
   barterDetails?: {
     propertyType: string;
@@ -197,12 +114,13 @@ export interface Transaction {
   };
   attachmentName?: string;
   attachmentData?: string;
-  receiptRefNumber?: string; // شماره فیش / سند تسویه
-  receiptFileName?: string; // نام فایل تصویر فیش واریز
-  receiptFileData?: string; // محتوای تصویر فیش واریز
-  paymentStatus?: "unpaid" | "partially_paid" | "paid";
+  receiptRefNumber?: string;
+  receiptFileName?: string;
+  receiptFileData?: string;
+  paymentStatus?: "paid" | "partially_paid" | "unpaid";
   payments?: TransactionPayment[];
   preSaleId?: string;
+  contactId?: string;
   isDeleted?: boolean;
   approvalStatus?: "pending" | "approved" | "rejected";
   approvedAmount?: number;
@@ -229,12 +147,20 @@ export interface UnitItem {
   id: string;
   projectId: string;
   unitNumber: string;
+  blockName?: string;
   floor: string;
+  saleAreaType?: "useful" | "with_commons";
+  usefulArea?: number;
+  storageArea?: number;
+  parkingArea?: number;
+  commonArea?: number;
   area: number;
   pricePerMeter: number;
   totalPrice: number;
   status: "available" | "pre_sold" | "sold" | "bartered";
   buyerName?: string;
+  contactId?: string;
+  contractId?: string;
   downPayment?: number;
   barterProperty?: string;
   specificExpenses: {
@@ -247,26 +173,155 @@ export interface UnitItem {
   deletedAt?: string;
 }
 
+export interface Contact {
+  id: string;
+  name: string;
+  phone: string;
+  role: "pre_buyer" | "supplier" | "subcontractor" | "imprest_holder" | "investor" | "employer" | "admin" | string;
+  roleName?: string;
+  roles?: string[];
+  nationalId?: string;
+  bankCardNumber?: string;
+  bankName?: string;
+  bankIBAN?: string;
+  jobCategory?: string;
+  paymentMethod?: "cash" | "barter";
+  barterUnits?: {
+    unitId: string;
+    blockName?: string;
+    saleAreaType?: "useful" | "with_commons";
+    usefulArea?: number;
+    storageArea?: number;
+    parkingArea?: number;
+    commonArea?: number;
+    area: number;
+    price: number;
+  }[];
+  balance: number;
+  createdAt?: string;
+  projectId?: string;
+}
+
+export interface ImprestFund {
+  id: string;
+  projectId: string;
+  contactId: string;
+  allocatedLimit: number;
+  balance: number;
+  status: "active" | "locked" | "closed";
+  lastReconciliationDate?: string;
+  createdAt: string;
+}
+
+export interface ImprestExpense {
+  id: string;
+  imprestId: string;
+  expenseDate: string;
+  amount: number;
+  invoiceNumber?: string;
+  description: string;
+  materialCategory?: string;
+  attachmentUrl?: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt?: string;
+  contactId?: string;
+  personName?: string;
+  stage?: string;
+  paymentStatus?: "unpaid" | "partially_paid" | "paid";
+  payments?: TransactionPayment[];
+  attachmentName?: string;
+  attachmentData?: string;
+}
+
+export interface PreSale {
+  id: string;
+  projectId: string;
+  contactId: string;
+  unitId: string;
+  blockName?: string;
+  saleAreaType?: "useful" | "with_commons";
+  usefulArea?: number;
+  storageArea?: number;
+  parkingArea?: number;
+  commonArea?: number;
+  contractArea: number;
+  pricePerMeter: number;
+  totalPrice: number;
+  contractDate: string;
+  status: "active" | "completed" | "canceled";
+  isScoringPending?: boolean;
+  exactArea?: number;
+  secondaryPricePerMeter?: number;
+  hasExactArea?: boolean;
+}
+
+export interface PreSaleInstallment {
+  id: string;
+  preSaleId: string;
+  installmentName: string;
+  dueDate: string;
+  amount: number;
+  isPaid: boolean;
+  paidDate?: string;
+  paidAmount?: number;
+  amountPaid?: number;
+  percentPaid?: number;
+}
+
+export interface AlertLog {
+  id: string;
+  type: "installment" | "check" | "imprest_lock";
+  referenceId: string;
+  recipientPhone: string;
+  message: string;
+  sendDate: string;
+  isSent: boolean;
+}
+
 export interface TimesheetItem {
   id: string;
   projectId: string;
   contactId: string;
+  personName?: string;
   date: string;
   hoursWorked: number;
+  overtimeHours?: number;
   dailyRate: number;
-  totalAmount: number;
+  overtimeRate?: number;
+  totalAmount?: number;
+  totalPay?: number;
+  stage?: string;
   description: string;
+  isPaid?: boolean;
 }
 
 export interface PayrollItem {
   id: string;
   projectId: string;
   contactId: string;
-  amount: number;
+  personName?: string;
+  month?: string;
+  year?: string;
+  baseSalary?: number;
+  housingAllowance?: number;
+  foodAllowance?: number;
+  childAllowance?: number;
+  overtimeHours?: number;
+  overtimePay?: number;
+  bonuses?: number;
+  insuranceWorker?: number;
+  insuranceEmployer?: number;
+  taxDeduction?: number;
+  advanceDeduction?: number;
+  otherDeductions?: number;
+  grossSalary?: number;
+  netPayable?: number;
+  amount?: number;
   paymentDate: string;
   accountId: string;
-  description: string;
+  description?: string;
   transactionId?: string;
+  isPaid?: boolean;
 }
 
 export interface DatabaseSchema {
@@ -288,5 +343,3 @@ export interface DatabaseSchema {
   timesheets?: TimesheetItem[];
   payrolls?: PayrollItem[];
 }
-
-

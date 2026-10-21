@@ -1,5 +1,5 @@
 -- D1 SQL Schema Initialization for Construction Contracting Accounting
--- Execute this via: wrangler d1 execute construction-accounting-db --remote --file=schema.sql
+-- Execute this via: wrangler d1 execute hesabdar_peymankar --remote --file=schema.sql
 
 CREATE TABLE IF NOT EXISTS companies (
   id TEXT PRIMARY KEY,
@@ -14,9 +14,19 @@ CREATE TABLE IF NOT EXISTS projects (
   address TEXT,
   total_area REAL,
   budget REAL,
-  stages TEXT, -- Store JSON string of stages
+  stages TEXT,
   current_stage TEXT,
-  status TEXT
+  status TEXT,
+  is_deleted INTEGER DEFAULT 0,
+  deleted_at TEXT,
+  number_of_units INTEGER,
+  default_unit_area REAL,
+  default_price_per_meter REAL,
+  blocks_json TEXT,
+  supervisor_name TEXT,
+  building_specs_json TEXT,
+  unit_specs_json TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -30,7 +40,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   code TEXT,
   level INTEGER,
   parent_code TEXT,
-  nature TEXT
+  nature TEXT,
+  project_id TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS contacts (
@@ -38,10 +50,19 @@ CREATE TABLE IF NOT EXISTS contacts (
   name TEXT NOT NULL,
   phone TEXT,
   role TEXT,
+  role_name TEXT,
+  roles_json TEXT,
   national_id TEXT,
   bank_card_number TEXT,
+  bank_name TEXT,
+  bank_iban TEXT,
+  job_category TEXT,
+  payment_method TEXT,
+  barter_units_json TEXT,
   balance REAL,
-  created_at TEXT
+  created_at TEXT,
+  project_id TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS imprest_funds (
@@ -60,11 +81,20 @@ CREATE TABLE IF NOT EXISTS imprest_expenses (
   imprest_id TEXT,
   expense_date TEXT,
   amount REAL,
+  invoice_number TEXT,
   description TEXT,
   material_category TEXT,
   attachment_url TEXT,
   status TEXT,
-  created_at TEXT
+  created_at TEXT,
+  contact_id TEXT,
+  person_name TEXT,
+  stage TEXT,
+  payment_status TEXT DEFAULT 'paid',
+  attachment_name TEXT,
+  attachment_data TEXT,
+  payments_json TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pre_sales (
@@ -72,6 +102,12 @@ CREATE TABLE IF NOT EXISTS pre_sales (
   project_id TEXT,
   contact_id TEXT,
   unit_id TEXT,
+  block_name TEXT,
+  sale_area_type TEXT,
+  useful_area REAL,
+  storage_area REAL,
+  parking_area REAL,
+  common_area REAL,
   contract_area REAL,
   price_per_meter REAL,
   total_price REAL,
@@ -79,7 +115,8 @@ CREATE TABLE IF NOT EXISTS pre_sales (
   status TEXT,
   has_exact_area INTEGER DEFAULT 0,
   exact_area REAL,
-  secondary_price_per_meter REAL
+  secondary_price_per_meter REAL,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pre_sale_installments (
@@ -109,7 +146,16 @@ CREATE TABLE IF NOT EXISTS materials (
   category TEXT,
   unit TEXT,
   stock REAL,
-  average_price REAL
+  average_price REAL,
+  code TEXT,
+  sub_category TEXT,
+  secondary_unit TEXT,
+  conversion_factor REAL,
+  consumption_type TEXT,
+  min_stock REAL,
+  purchase_price REAL,
+  project_id TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS material_transactions (
@@ -136,6 +182,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   person_name TEXT,
   date TEXT,
   description TEXT,
+  invoice_number TEXT,
   is_non_cash INTEGER DEFAULT 0,
   barter_property_type TEXT,
   barter_description TEXT,
@@ -147,7 +194,10 @@ CREATE TABLE IF NOT EXISTS transactions (
   approved_by TEXT,
   approved_date TEXT,
   pre_sale_id TEXT,
-  contact_id TEXT
+  contact_id TEXT,
+  payment_status TEXT DEFAULT 'paid',
+  payments_json TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS checks (
@@ -168,17 +218,26 @@ CREATE TABLE IF NOT EXISTS units (
   id TEXT PRIMARY KEY,
   project_id TEXT,
   unit_number TEXT,
+  block_name TEXT,
   floor TEXT,
+  sale_area_type TEXT,
+  useful_area REAL,
+  storage_area REAL,
+  parking_area REAL,
+  common_area REAL,
   area REAL,
   price_per_meter REAL,
   total_price REAL,
   status TEXT,
   buyer_name TEXT,
+  contact_id TEXT,
+  contract_id TEXT,
   down_payment REAL,
   barter_property TEXT,
   specific_expenses TEXT,
   is_deleted INTEGER DEFAULT 0,
-  deleted_at TEXT
+  deleted_at TEXT,
+  extra_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -248,4 +307,3 @@ CREATE TABLE IF NOT EXISTS backups (
   stats_json TEXT,
   db_json TEXT
 );
-

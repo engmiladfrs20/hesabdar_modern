@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
 import { getTodayShamsiString } from "../utils/shamsi";
+import { toEnglishDigits } from "../utils/digits";
 import { 
   Users, 
   Wallet, 
@@ -168,6 +169,12 @@ function numberToPersianWords(num: number): string {
 interface BarterUnitInput {
   selectionType: "specific" | "scoring";
   unitId: string;
+  blockName?: string;
+  saleAreaType?: "useful" | "with_commons";
+  usefulArea?: string;
+  storageArea?: string;
+  parkingArea?: string;
+  commonArea?: string;
   area: string;
   price: string;
 }
@@ -226,6 +233,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   const [projectModalAddress, setProjectModalAddress] = useState("");
   const [projectModalBudget, setProjectModalBudget] = useState("");
   const [projectModalArea, setProjectModalArea] = useState("");
+  const [projectModalTotalUnits, setProjectModalTotalUnits] = useState("10");
 
   const [modalTriggerOrigin, setModalTriggerOrigin] = useState<"imprest_project" | "imprest_contact" | "expense_contact" | "presale_project" | "presale_contact" | null>(null);
 
@@ -256,6 +264,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
     personName: "",
     materialCategory: "تأسیسات",
     stage: "عمومی",
+    invoiceNumber: "",
     description: "",
     amount: "",
     expenseDate: getTodayShamsiString(),
@@ -269,6 +278,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   const [selectedExpenseForPay, setSelectedExpenseForPay] = useState<ImprestExpense | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payDate, setPayDate] = useState(() => getTodayShamsiString());
+  const [payInvoiceNum, setPayInvoiceNum] = useState("");
   const [payRef, setPayRef] = useState("");
   const [payDesc, setPayDesc] = useState("");
 
@@ -276,6 +286,12 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
     projectId: projects[0]?.id || "p1",
     contactId: "",
     unitId: "",
+    blockName: "",
+    saleAreaType: "useful" as "useful" | "with_commons",
+    usefulArea: "",
+    storageArea: "0",
+    parkingArea: "0",
+    commonArea: "0",
     contractArea: "",
     pricePerMeter: "",
     contractDate: getTodayShamsiString()
@@ -309,6 +325,14 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   const [exactAreaInput, setExactAreaInput] = useState("");
   const [secondaryPriceInput, setSecondaryPriceInput] = useState("");
   const [hasExactAreaChecked, setHasExactAreaChecked] = useState(false);
+
+  useEffect(() => {
+    if (projects.length > 0) {
+      setImprestForm(prev => (!prev.projectId || !projects.some(p => p.id === prev.projectId)) ? { ...prev, projectId: projects[0].id } : prev);
+      setPresaleForm(prev => (!prev.projectId || !projects.some(p => p.id === prev.projectId)) ? { ...prev, projectId: projects[0].id } : prev);
+      setContactModalProjectId(prev => (!prev || !projects.some(p => p.id === prev)) ? projects[0].id : prev);
+    }
+  }, [projects]);
 
   React.useEffect(() => {
     if (selectedPreSaleId) {
@@ -536,6 +560,12 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
     try {
       const barterUnits = contactModalPaymentMethod === "barter" ? contactModalBarterUnitsList.map(bu => ({
         unitId: bu.selectionType === "scoring" ? "after_scoring" : bu.unitId,
+        blockName: bu.blockName || "",
+        saleAreaType: bu.saleAreaType || "useful",
+        usefulArea: Number(bu.usefulArea || bu.area || 0),
+        storageArea: Number(bu.storageArea || 0),
+        parkingArea: Number(bu.parkingArea || 0),
+        commonArea: (bu.saleAreaType === "with_commons") ? Number(bu.commonArea || 0) : 0,
         area: Number(bu.area),
         price: Number(bu.price),
         selectionType: bu.selectionType
@@ -617,8 +647,9 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           companyId: activeCompanyId || "c1",
           name: projectModalName.trim(),
           address: projectModalAddress.trim() || "ثبت شده از تنخواه",
-          totalArea: Number(projectModalArea) || 0,
-          budget: Number(projectModalBudget) || 0,
+          totalUnits: Number(toEnglishDigits(projectModalTotalUnits)) || 0,
+          totalArea: Number(toEnglishDigits(projectModalArea)) || 0,
+          budget: Number(toEnglishDigits(projectModalBudget)) || 0,
           status: "active"
         })
       });
@@ -806,6 +837,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imprestId: expenseForm.imprestId,
+          invoiceNumber: expenseForm.invoiceNumber,
           description: expenseForm.description,
           amount: Number(expenseForm.amount),
           expenseDate: expenseForm.expenseDate,
@@ -829,6 +861,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           personName: "",
           materialCategory: "تأسیسات",
           stage: "عمومی",
+          invoiceNumber: "",
           description: "",
           amount: "",
           expenseDate: getTodayShamsiString(),
@@ -863,6 +896,8 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           expenseId: selectedExpenseForPay.id,
           amount: Number(payAmount),
           date: payDate,
+          invoiceNumber: payInvoiceNum || selectedExpenseForPay.invoiceNumber || "",
+          invoiceDescription: payDesc || selectedExpenseForPay.description || "",
           referenceNumber: payRef,
           description: payDesc
         })
@@ -872,6 +907,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
         setSuccessMsg("پرداخت فاکتور با موفقیت در تنخواه ثبت و از صندوق کسر شد.");
         setSelectedExpenseForPay(null);
         setPayAmount("");
+        setPayInvoiceNum("");
         setPayRef("");
         setPayDesc("");
         await onRefresh();
@@ -892,7 +928,12 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    const calculatedTotal = Number(presaleForm.contractArea) * Number(presaleForm.pricePerMeter);
+    const uArea = Number(presaleForm.usefulArea || presaleForm.contractArea || 0);
+    const sArea = Number(presaleForm.storageArea || 0);
+    const pArea = Number(presaleForm.parkingArea || 0);
+    const cArea = presaleForm.saleAreaType === "with_commons" ? Number(presaleForm.commonArea || 0) : 0;
+    const totalArea = Number(presaleForm.contractArea) || (uArea + sArea + pArea + cArea);
+    const calculatedTotal = Math.round(totalArea * Number(presaleForm.pricePerMeter));
 
     try {
       const response = await fetch(getApiUrl("/api/presales"), {
@@ -902,7 +943,13 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           projectId: presaleForm.projectId,
           contactId: presaleForm.contactId,
           unitId: presaleForm.unitId,
-          contractArea: Number(presaleForm.contractArea),
+          blockName: presaleForm.blockName,
+          saleAreaType: presaleForm.saleAreaType,
+          usefulArea: uArea,
+          storageArea: sArea,
+          parkingArea: pArea,
+          commonArea: cArea,
+          contractArea: totalArea,
           pricePerMeter: Number(presaleForm.pricePerMeter),
           totalPrice: calculatedTotal,
           contractDate: presaleForm.contractDate
@@ -915,6 +962,12 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           projectId: projects[0]?.id || "p1",
           contactId: "",
           unitId: "",
+          blockName: "",
+          saleAreaType: "useful",
+          usefulArea: "",
+          storageArea: "0",
+          parkingArea: "0",
+          commonArea: "0",
           contractArea: "",
           pricePerMeter: "",
           contractDate: getTodayShamsiString()
@@ -1233,10 +1286,11 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                  <div>
                   <label className="text-[10px] text-slate-500 font-bold block mb-1">مانده اولیه (ریال)</label>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     placeholder="مثال: -500000000"
                     value={contactForm.balance}
-                    onChange={e => setContactForm({ ...contactForm, balance: e.target.value })}
+                    onChange={e => setContactForm({ ...contactForm, balance: toEnglishDigits(e.target.value).replace(/[^0-9.-]/g, "") })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none font-mono"
                   />
                   {contactForm.balance && Number(contactForm.balance) !== 0 && (
@@ -1497,7 +1551,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                       setExpenseForm(prev => ({ 
                         ...prev, 
                         contactId: val, 
-                        personName: contactObj ? contactObj.name : "" 
+                        personName: contactObj ? contactObj.name : val 
                       }));
                     }}
                     allowCustom={true}
@@ -1550,16 +1604,28 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                   />
                 </div>
 
-                <div>
-                  <label className="text-[10px] text-slate-500 font-bold block mb-1">شرح دقیق هزینه / خرید مصالح</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="مثال: خرید میخ و سیم آرماتوربندی کارگاه"
-                    value={expenseForm.description}
-                    onChange={e => setExpenseForm({ ...expenseForm, description: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-bold block mb-1">شماره فاکتور</label>
+                    <input
+                      type="text"
+                      placeholder="مثال: ۱۰۴۵"
+                      value={expenseForm.invoiceNumber}
+                      onChange={e => setExpenseForm({ ...expenseForm, invoiceNumber: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-[10px] text-slate-500 font-bold block mb-1">شرح دقیق هزینه / شرح فاکتور *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="مثال: خرید میخ و سیم آرماتوربندی کارگاه"
+                      value={expenseForm.description}
+                      onChange={e => setExpenseForm({ ...expenseForm, description: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -1769,9 +1835,11 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                 <table className="w-full text-xs text-right border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
+                      <th className="p-2.5 text-center">ردیف</th>
+                      <th className="p-2.5 text-center">شماره فاکتور</th>
                       <th className="p-2.5">ناظر تنخواه‌دار</th>
                       <th className="p-2.5">طرف حساب فروشنده</th>
-                      <th className="p-2.5">شرح قلم هزینه فاکتور</th>
+                      <th className="p-2.5">شرح فاکتور</th>
                       <th className="p-2.5 text-center">تاریخ</th>
                       <th className="p-2.5">دسته‌بندی</th>
                       <th className="p-2.5 text-left">مبلغ کل هزینه</th>
@@ -1782,10 +1850,10 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                   <tbody className="divide-y divide-slate-100">
                     {db.imprestExpenses?.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="text-center py-8 text-slate-400 font-light text-sm">هیچ هزینه تنخواهی یافت نشد.</td>
+                        <td colSpan={10} className="text-center py-8 text-slate-400 font-light text-sm">هیچ هزینه تنخواهی یافت نشد.</td>
                       </tr>
                     ) : (
-                      db.imprestExpenses?.map(ie => {
+                      db.imprestExpenses?.map((ie, idx) => {
                         const fund = imprestList.find(f => f.id === ie.imprestId);
                         const supervisor = fund ? contactsList.find(c => c.id === fund.contactId) : null;
                         const vendor = contactsList.find(c => c.id === ie.contactId);
@@ -1795,6 +1863,8 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                         
                         return (
                           <tr key={ie.id} className="hover:bg-slate-50/50">
+                            <td className="p-2.5 text-center font-mono font-bold text-slate-500">{(idx + 1).toLocaleString("fa-IR")}</td>
+                            <td className="p-2.5 text-center font-mono font-bold text-indigo-700">{ie.invoiceNumber || "—"}</td>
                             <td className="p-2.5">
                               <span className="font-bold text-slate-800 block">{supervisor?.name || "ناظر کارگاه"}</span>
                               <span className="text-[9px] text-slate-400 font-light block">پروژه {projects.find(p => p.id === fund?.projectId)?.name || "عمومی"}</span>
@@ -1964,15 +2034,27 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                       </div>
                     </div>
 
-                    <div>
-                      <label className="text-[10px] text-slate-500 font-bold block mb-1">توضیحات تکمیلی</label>
-                      <input
-                        type="text"
-                        placeholder="مثال: واریز نقدی قسط دوم خرید آهن‌آلات"
-                        value={payDesc}
-                        onChange={e => setPayDesc(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none"
-                      />
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] text-slate-500 font-bold block mb-1">شماره فاکتور</label>
+                        <input
+                          type="text"
+                          placeholder="مثال: ۱۰۴۵"
+                          value={payInvoiceNum}
+                          onChange={e => setPayInvoiceNum(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500 font-bold block mb-1">شرح فاکتور / توضیحات پرداخت</label>
+                        <input
+                          type="text"
+                          placeholder="مثال: واریز نقدی قسط دوم خرید آهن‌آلات"
+                          value={payDesc}
+                          onChange={e => setPayDesc(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none"
+                        />
+                      </div>
                     </div>
 
                     <button
@@ -2022,7 +2104,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
               <div>
                 <label className="text-[10px] text-slate-500 font-bold block mb-1">پیش‌خریدار (طرف حساب از لیست)</label>
                 <SearchableCombobox
-                  options={contactsList.filter(c => c.role === "pre_buyer").map(c => ({ value: c.id, label: c.name, subLabel: c.phone || "بدون شماره" }))}
+                  options={contactsList.map(c => ({ value: c.id, label: c.name, subLabel: `${c.phone || "بدون شماره"} (${c.role === "pre_buyer" ? "پیش‌خریدار" : "طرف حساب"})` }))}
                   value={presaleForm.contactId}
                   onChange={val => setPresaleForm({ ...presaleForm, contactId: val })}
                   allowCustom={true}
@@ -2041,46 +2123,201 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                 />
               </div>
 
-              <div>
-                <label className="text-[10px] text-slate-500 font-bold block mb-1">واحد مسکونی ساختمانی</label>
-                <select
-                  required
-                  value={presaleForm.unitId}
-                  onChange={e => {
-                    const unit = db.units.find(u => u.id === e.target.value);
-                    setPresaleForm({
-                      ...presaleForm,
-                      unitId: e.target.value,
-                      contractArea: unit ? unit.area.toString() : (e.target.value === "after_scoring" ? "100" : ""),
-                      pricePerMeter: unit ? unit.pricePerMeter.toString() : (e.target.value === "after_scoring" ? "40000000" : "")
-                    });
-                  }}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs focus:outline-none"
-                >
-                  <option value="">-- انتخاب آپارتما‌ن‌های فروخته نشده --</option>
-                  <option value="after_scoring" className="text-indigo-600 font-bold">✨ تعیین واحد مسکونی بعد از امتیازدهی (انتخاب بر اساس پرداخت‌ها)</option>
-                  {db.units.filter(u => u.projectId === presaleForm.projectId && u.status === "available").map(u => (
-                    <option key={u.id} value={u.id}>
-                      واحد {u.unitNumber} - طبقه {u.floor} ({u.area} مترمربع)
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-slate-500 font-bold block mb-1">واحد مسکونی ساختمانی *</label>
+                  <select
+                    required
+                    value={presaleForm.unitId}
+                    onChange={e => {
+                      const unit = db.units.find(u => u.id === e.target.value);
+                      const sType = unit?.saleAreaType || "useful";
+                      const uArea = unit?.usefulArea !== undefined ? unit.usefulArea : (unit?.area || (e.target.value === "after_scoring" ? 100 : 0));
+                      const stArea = unit?.storageArea || 0;
+                      const pkArea = unit?.parkingArea || 0;
+                      const cmArea = sType === "with_commons" ? (unit?.commonArea || 0) : 0;
+                      const totalA = uArea + stArea + pkArea + cmArea;
+                      setPresaleForm({
+                        ...presaleForm,
+                        unitId: e.target.value,
+                        blockName: unit?.blockName || "",
+                        saleAreaType: sType,
+                        usefulArea: String(uArea || ""),
+                        storageArea: String(stArea),
+                        parkingArea: String(pkArea),
+                        commonArea: String(cmArea),
+                        contractArea: totalA > 0 ? String(totalA) : (unit ? unit.area.toString() : (e.target.value === "after_scoring" ? "100" : "")),
+                        pricePerMeter: unit && unit.pricePerMeter > 0 ? unit.pricePerMeter.toString() : (e.target.value === "after_scoring" ? "40000000" : presaleForm.pricePerMeter)
+                      });
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs focus:outline-none"
+                  >
+                    <option value="">-- انتخاب آپارتمان‌های فروخته نشده --</option>
+                    <option value="after_scoring" className="text-indigo-600 font-bold">✨ تعیین واحد مسکونی بعد از امتیازدهی (انتخاب بر اساس پرداخت‌ها)</option>
+                    {db.units.filter(u => u.projectId === presaleForm.projectId && !u.isDeleted && u.status === "available").map(u => (
+                      <option key={u.id} value={u.id}>
+                        واحد {u.unitNumber}{u.blockName ? ` (بلوک ${u.blockName})` : ""} - طبقه {u.floor} ({u.area > 0 ? `${u.area} مترمربع` : "تعیین متراژ در قرارداد"})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 font-bold block mb-1">بلوک بندی (نام یا کد بلوک)</label>
+                  <input
+                    type="text"
+                    placeholder="مثال: بلوک A یا شمالی"
+                    value={presaleForm.blockName}
+                    onChange={e => setPresaleForm({ ...presaleForm, blockName: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-indigo-50/40 border border-indigo-100 rounded-2xl space-y-3">
+                <div>
+                  <label className="text-[10px] text-indigo-900 font-extrabold block mb-1">نوع محاسبه متراژ در این قرارداد *</label>
+                  <select
+                    value={presaleForm.saleAreaType}
+                    onChange={e => {
+                      const nextType = e.target.value as "useful" | "with_commons";
+                      const uA = Number(presaleForm.usefulArea) || 0;
+                      const sA = Number(presaleForm.storageArea) || 0;
+                      const pA = Number(presaleForm.parkingArea) || 0;
+                      const cA = nextType === "with_commons" ? (Number(presaleForm.commonArea) || 0) : 0;
+                      const sumA = Number((uA + sA + pA + cA).toFixed(2));
+                      setPresaleForm({
+                        ...presaleForm,
+                        saleAreaType: nextType,
+                        commonArea: nextType === "useful" ? "0" : presaleForm.commonArea,
+                        contractArea: sumA > 0 ? String(sumA) : presaleForm.contractArea
+                      });
+                    }}
+                    className="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2 text-xs font-bold text-indigo-950 focus:outline-none"
+                  >
+                    <option value="useful">قرارداد فروش واحد مفید (متراژ مشاعات غیرفعال)</option>
+                    <option value="with_commons">قرارداد فروش واحد با مشاعات (متراژ مشاعات فعال)</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="text-[10px] text-slate-600 font-bold block mb-1">متراژ مفید واحد (مترمربع) *</label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      required
+                      placeholder="مثال: ۱۱۰"
+                      value={presaleForm.usefulArea}
+                      onChange={e => {
+                        const val = toEnglishDigits(e.target.value).replace(/[^0-9.]/g, "");
+                        const uA = Number(val) || 0;
+                        const sA = Number(presaleForm.storageArea) || 0;
+                        const pA = Number(presaleForm.parkingArea) || 0;
+                        const cA = presaleForm.saleAreaType === "with_commons" ? (Number(presaleForm.commonArea) || 0) : 0;
+                        const sumA = Number((uA + sA + pA + cA).toFixed(2));
+                        setPresaleForm({
+                          ...presaleForm,
+                          usefulArea: val,
+                          contractArea: String(sumA)
+                        });
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-mono font-bold focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-600 font-bold block mb-1">متراژ انباری (مترمربع)</label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="۰"
+                      value={presaleForm.storageArea}
+                      onChange={e => {
+                        const val = toEnglishDigits(e.target.value).replace(/[^0-9.]/g, "");
+                        const uA = Number(presaleForm.usefulArea) || 0;
+                        const sA = Number(val) || 0;
+                        const pA = Number(presaleForm.parkingArea) || 0;
+                        const cA = presaleForm.saleAreaType === "with_commons" ? (Number(presaleForm.commonArea) || 0) : 0;
+                        const sumA = Number((uA + sA + pA + cA).toFixed(2));
+                        setPresaleForm({
+                          ...presaleForm,
+                          storageArea: val,
+                          contractArea: String(sumA)
+                        });
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-mono font-bold focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-600 font-bold block mb-1">متراژ پارکینگ (مترمربع)</label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="۰"
+                      value={presaleForm.parkingArea}
+                      onChange={e => {
+                        const val = toEnglishDigits(e.target.value).replace(/[^0-9.]/g, "");
+                        const uA = Number(presaleForm.usefulArea) || 0;
+                        const sA = Number(presaleForm.storageArea) || 0;
+                        const pA = Number(val) || 0;
+                        const cA = presaleForm.saleAreaType === "with_commons" ? (Number(presaleForm.commonArea) || 0) : 0;
+                        const sumA = Number((uA + sA + pA + cA).toFixed(2));
+                        setPresaleForm({
+                          ...presaleForm,
+                          parkingArea: val,
+                          contractArea: String(sumA)
+                        });
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-mono font-bold focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-600 font-bold block mb-1">
+                      متراژ مشاعات {presaleForm.saleAreaType === "useful" ? "(غیرفعال در فروش مفید)" : "(مترمربع)"}
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="۰"
+                      disabled={presaleForm.saleAreaType === "useful"}
+                      value={presaleForm.saleAreaType === "with_commons" ? presaleForm.commonArea : "0"}
+                      onChange={e => {
+                        const val = toEnglishDigits(e.target.value).replace(/[^0-9.]/g, "");
+                        const uA = Number(presaleForm.usefulArea) || 0;
+                        const sA = Number(presaleForm.storageArea) || 0;
+                        const pA = Number(presaleForm.parkingArea) || 0;
+                        const cA = Number(val) || 0;
+                        const sumA = Number((uA + sA + pA + cA).toFixed(2));
+                        setPresaleForm({
+                          ...presaleForm,
+                          commonArea: val,
+                          contractArea: String(sumA)
+                        });
+                      }}
+                      className={`w-full border rounded-xl px-3 py-1.5 text-xs font-mono font-bold ${
+                        presaleForm.saleAreaType === "useful"
+                          ? "bg-slate-200 border-slate-300 text-slate-400 cursor-not-allowed"
+                          : "bg-white border-indigo-300 text-indigo-900 focus:outline-none"
+                      }`}
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[10px] text-slate-500 font-bold block mb-1">مساحت معامله (متر)</label>
+                  <label className="text-[10px] text-slate-500 font-bold block mb-1">جمع کل متراژ معامله (متر)</label>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     required
-                    placeholder="مساحت دقیق"
+                    placeholder="مساحت کل محاسبه شده"
                     value={presaleForm.contractArea}
-                    onChange={e => setPresaleForm({ ...presaleForm, contractArea: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none"
+                    onChange={e => setPresaleForm({ ...presaleForm, contractArea: toEnglishDigits(e.target.value).replace(/[^0-9.]/g, "") })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-black focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] text-slate-500 font-bold block mb-1">فی هر مترمربع (ریال)</label>
+                  <label className="text-[10px] text-slate-500 font-bold block mb-1">فی هر مترمربع (ریال) *</label>
                   <FormattedAmountInput
                     required
                     placeholder="قیمت هر متر"
@@ -2264,13 +2501,13 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                             <div className="space-y-1">
                               <label className="text-[10px] text-slate-500 font-bold block">متراژ دقیق سند رسمی (مترمربع)</label>
                               <input
-                                type="number"
-                                step="0.01"
+                                type="text"
+                                inputMode="decimal"
                                 required
                                 placeholder="مثال: ۱۰۵.۴"
                                 value={exactAreaInput}
-                                onChange={e => setExactAreaInput(e.target.value)}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500"
+                                onChange={e => setExactAreaInput(toEnglishDigits(e.target.value))}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500 font-mono"
                               />
                               <span className="text-[9px] text-slate-400 font-medium block">متراژ تقریبی اولیه قرارداد: {currentPreSale.contractArea} مترمربع</span>
                             </div>
@@ -2960,12 +3197,13 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                             <div>
                               <label className="text-[9px] text-amber-800 font-semibold block mb-1">متراژ واحد (متر مربع)</label>
                               <input
-                                type="number"
+                                type="text"
+                                inputMode="decimal"
                                 placeholder="مثال: ۱۰۰"
                                 value={bu.area}
                                 onChange={e => {
                                   const updated = [...contactModalBarterUnitsList];
-                                  updated[idx].area = e.target.value;
+                                  updated[idx].area = toEnglishDigits(e.target.value).replace(/[^0-9.]/g, "");
                                   setContactModalBarterUnitsList(updated);
                                 }}
                                 className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-[11px] focus:outline-none text-center font-mono"
@@ -3077,13 +3315,14 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[10px] text-slate-500 font-bold block mb-1">زیربنای کل (مترمربع)</label>
+                  <label className="text-[10px] text-slate-500 font-bold block mb-1">تعداد کل واحدها *</label>
                   <input
-                    type="number"
-                    placeholder="مثال: ۱۲۰۰"
-                    value={projectModalArea}
-                    onChange={e => setProjectModalArea(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="مثال: ۱۰"
+                    value={projectModalTotalUnits}
+                    onChange={e => setProjectModalTotalUnits(toEnglishDigits(e.target.value).replace(/[^0-9]/g, ""))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none font-mono font-bold"
                   />
                 </div>
                 <div>

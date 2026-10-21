@@ -1,37 +1,44 @@
 {
-  "name": "construction-accounting-offline",
+  "name": "hesabdar-sazeh-desktop",
   "version": "1.0.0",
-  "description": "سامانه حسابداری سازه - نسخه آفلاین دسکتاپ ویندوز با قابلیت همگام‌سازی ابری",
+  "description": "سامانه حسابداری سازه و پروژه‌های ساختمانی (نسخه دسکتاپ آفلاین ویندوز)",
   "main": "electron-main.cjs",
-  "author": "Milad Farrokhi",
   "scripts": {
     "start": "electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder --win --x64"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "dotenv": "^16.4.5",
-    "@google/genai": "^2.4.0"
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "tsx": "^4.21.0"
   },
   "devDependencies": {
     "electron": "^30.0.1",
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.milad.construction.accounting",
-    "productName": "ConstructionAccountingOffline",
-    "win": {
-      "target": "nsis"
-    },
+    "appId": "com.sazeh.accounting",
+    "productName": "HesabdarSazeh",
     "directories": {
-      "output": "release"
+      "output": "dist-exe"
     },
     "files": [
       "dist/**/*",
+      "server.ts",
       "electron-main.cjs",
-      "package.json",
-      "db.json"
-    ]
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "سامانه حسابداری سازه"
+    }
   }
 }

@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef } from "react";
-import { ChevronDown, Search, Check, Plus, Loader2 } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useState, useRef, useEffect } from "react";
+import { ChevronDown, Plus, Search, Check } from "lucide-react";
 
 export interface ComboboxOption {
-  value: string;
+  id?: string;
+  value?: string;
   label: string;
-  group?: string;
   subLabel?: string;
+  group?: string;
 }
 
 interface SearchableComboboxProps {
@@ -14,268 +14,312 @@ interface SearchableComboboxProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
-  emptyMessage?: string;
-  allowCustom?: boolean;
-  onCustomAdd?: (newValue: string) => Promise<boolean | void> | boolean | void;
-  onCustomClick?: (searchTerm: string) => void;
+  label?: string;
+  onCustomAdd?: (searchQuery: string) => void;
+  onCustomClick?: (searchQuery: string) => void;
   customAddLabel?: string;
+  allowCustom?: boolean;
+  emptyMessage?: string;
+  required?: boolean;
   disabled?: boolean;
   className?: string;
 }
 
-export default function SearchableCombobox({
+export function getOptionKey(opt: ComboboxOption): string {
+  return opt.id !== undefined ? opt.id : (opt.value !== undefined ? opt.value : opt.label);
+}
+
+export const SearchableCombobox: React.FC<SearchableComboboxProps> = ({
   options,
   value,
   onChange,
-  placeholder = "انتخاب کنید...",
-  emptyMessage = "موردی یافت نشد.",
-  allowCustom = false,
+  placeholder = "انتخاب یا جستجو کنید...",
+  label,
   onCustomAdd,
   onCustomClick,
-  customAddLabel = "افزودن به عنوان مورد جدید",
+  customAddLabel = "افزودن مورد جدید",
+  allowCustom = false,
+  emptyMessage = "موردی یافت نشد.",
+  required = false,
   disabled = false,
   className = "",
-}: SearchableComboboxProps) {
+}) => {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [isAdding, setIsAdding] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Find currently selected option
-  const selectedOption = options.find((opt) => opt.value === value);
+  const customAction = onCustomAdd || onCustomClick;
 
-  // Normalize text for intelligent Persian search
-  const normalizeText = (text: string) => {
-    if (!text) return "";
-    return text
-      .toLowerCase()
-      .replace(/ي/g, "ی")
-      .replace(/ك/g, "ک")
-      .replace(/ة/g, "ه")
-      .replace(/[\u200C\u200B]/g, " ") // Zero-width spaces
-      .trim();
-  };
+  const selectedOption = options.find((o) => getOptionKey(o) === value);
+  const displayLabel = selectedOption ? selectedOption.label : (value || "");
 
-  // Filter options based on normalized search query
-  const normalizedSearch = normalizeText(search);
-  const filteredOptions = options.filter((opt) => {
-    if (!normalizedSearch) return true;
-    const normLabel = normalizeText(opt.label);
-    const normGroup = normalizeText(opt.group || "");
-    const normSub = normalizeText(opt.subLabel || "");
-    return (
-      normLabel.includes(normalizedSearch) ||
-      normGroup.includes(normalizedSearch) ||
-      normSub.includes(normalizedSearch)
-    );
+  // Sync display text when external value changes and user is not actively typing
+  useEffect(() => {
+    if (!isTyping) {
+      const matched = options.find((o) => getOptionKey(o) === value);
+      setSearch(matched ? matched.label : (value || ""));
+    }
+  }, [value, isTyping, options.length]);
+
+  // Filter options based on search string ONLY when user is actively typing a filter
+  const activeQuery = isTyping ? search.trim().toLowerCase() : "";
+  const filteredOptions = options.filter((o) => {
+    if (!activeQuery) return true;
+    const matchLabel = (o.label || "").toLowerCase().includes(activeQuery);
+    const matchSub = o.subLabel ? o.subLabel.toLowerCase().includes(activeQuery) : false;
+    const matchGroup = o.group ? o.group.toLowerCase().includes(activeQuery) : false;
+    return matchLabel || matchSub || matchGroup;
   });
 
-  // Handle click outside to close the dropdown
+  // Reset highlighted index when filtered options change
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
+    setHighlightedIndex(0);
+  }, [search, isOpen]);
+
+  const isIdMapped = options.some(
+    (o) => o.value && o.value !== o.label && /^(p|c|u|a|m|t|ps|imp)_/.test(String(o.value))
+  );
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        if (isOpen) {
+          setIsOpen(false);
+          setIsTyping(false);
+          // If user typed something while open
+          if (search.trim()) {
+            const exactMatch = options.find(
+              (o) => o.label.trim() === search.trim() || getOptionKey(o) === search.trim()
+            );
+            if (exactMatch) {
+              onChange(getOptionKey(exactMatch));
+              setSearch(exactMatch.label);
+            } else if (allowCustom && !isIdMapped) {
+              onChange(search.trim());
+            } else {
+              const currentMatch = options.find((o) => getOptionKey(o) === value);
+              setSearch(currentMatch ? currentMatch.label : (value || ""));
+            }
+          } else {
+            const currentMatch = options.find((o) => getOptionKey(o) === value);
+            setSearch(currentMatch ? currentMatch.label : (value || ""));
+          }
+        }
       }
-    }
+    };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [isOpen, search, value, options, allowCustom, isIdMapped, onChange]);
 
-  // Update search input when selected option changes or when dropdown is toggled
-  useEffect(() => {
-    if (isOpen) {
-      setSearch("");
-    } else {
-      setSearch(selectedOption ? selectedOption.label : "");
-    }
-  }, [isOpen, selectedOption]);
-
-  const handleSelect = (val: string) => {
-    onChange(val);
+  const handleSelect = (opt: ComboboxOption) => {
+    const key = getOptionKey(opt);
+    onChange(key);
+    setSearch(opt.label);
+    setIsTyping(false);
     setIsOpen(false);
   };
 
-  const handleAddCustom = async () => {
-    if (!search.trim()) return;
-    if (onCustomClick) {
-      onCustomClick(search.trim());
-      setIsOpen(false);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (disabled) return;
+    if (!isOpen) {
+      if (e.key === "ArrowDown" || e.key === "Enter") {
+        e.preventDefault();
+        setIsOpen(true);
+      }
       return;
     }
-    if (!onCustomAdd) return;
-    setIsAdding(true);
-    try {
-      const res = await onCustomAdd(search.trim());
-      // If the callback returns false, we might not want to close or select, but usually we do
-      if (res !== false) {
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedIndex((prev) =>
+        prev < filteredOptions.length - 1 ? prev + 1 : prev
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (filteredOptions[highlightedIndex]) {
+        handleSelect(filteredOptions[highlightedIndex]);
+      } else if (allowCustom && !isIdMapped && search.trim()) {
         onChange(search.trim());
+        setIsTyping(false);
         setIsOpen(false);
+      } else if (customAction) {
+        setIsTyping(false);
+        setIsOpen(false);
+        customAction(search.trim());
       }
-    } catch (err) {
-      console.error("Error adding custom item to combobox:", err);
-    } finally {
-      setIsAdding(false);
+    } else if (e.key === "Escape") {
+      setIsTyping(false);
+      setIsOpen(false);
+      setSearch(displayLabel);
     }
   };
 
-  // Group filtered options if any option has a group
-  const hasGroups = options.some((opt) => opt.group);
-  const groupedOptions: Record<string, ComboboxOption[]> = {};
-  const noGroupOptions: ComboboxOption[] = [];
-
-  if (hasGroups) {
-    filteredOptions.forEach((opt) => {
-      if (opt.group) {
-        if (!groupedOptions[opt.group]) {
-          groupedOptions[opt.group] = [];
-        }
-        groupedOptions[opt.group].push(opt);
-      } else {
-        noGroupOptions.push(opt);
-      }
-    });
-  }
-
   return (
-    <div
-      ref={containerRef}
-      className={`relative w-full text-right ${className} ${disabled ? "opacity-60 pointer-events-none" : ""}`}
-      dir="rtl"
-    >
-      {/* Input / Trigger */}
+    <div className={`relative ${className}`} ref={containerRef}>
+      {label && (
+        <label className="block text-slate-600 font-semibold mb-1.5 text-xs">
+          {label} {required && <span className="text-rose-500">*</span>}
+        </label>
+      )}
       <div
-        onClick={() => !disabled && setIsOpen(!isOpen)}
-        className="flex items-center justify-between w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition-all cursor-pointer"
+        className={`flex items-center justify-between w-full px-3 py-2 bg-slate-50 border rounded-xl transition-all ${
+          disabled
+            ? "opacity-60 cursor-not-allowed border-slate-200 bg-slate-100"
+            : isOpen
+            ? "border-indigo-500 ring-2 ring-indigo-500/10 bg-white"
+            : "border-slate-200 hover:border-slate-300"
+        }`}
+        onClick={() => {
+          if (disabled) return;
+          if (!isOpen) {
+            setIsOpen(true);
+            inputRef.current?.focus();
+          }
+        }}
       >
-        <input
-          type="text"
-          className="w-full bg-transparent border-none outline-none text-slate-800 text-xs font-medium cursor-text"
-          placeholder={placeholder}
-          value={isOpen ? search : selectedOption ? selectedOption.label : ""}
-          onChange={(e) => {
-            if (!isOpen) setIsOpen(true);
-            setSearch(e.target.value);
-          }}
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {isOpen ? (
+            <Search className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+          ) : null}
+          <input
+            ref={inputRef}
+            type="text"
+            disabled={disabled}
+            className="w-full bg-transparent outline-none text-xs text-slate-800 placeholder-slate-400 truncate"
+            placeholder={selectedOption ? selectedOption.label : placeholder}
+            value={isOpen && isTyping ? search : displayLabel}
+            onChange={(e) => {
+              const val = e.target.value;
+              setIsTyping(true);
+              setSearch(val);
+              if (!isOpen) setIsOpen(true);
+              const exactMatch = options.find(
+                (o) => o.label.trim() === val.trim() || getOptionKey(o) === val.trim()
+              );
+              if (exactMatch) {
+                onChange(getOptionKey(exactMatch));
+              } else if (allowCustom && !isIdMapped) {
+                onChange(val);
+              }
+            }}
+            onFocus={(e) => {
+              if (!disabled) {
+                if (!isOpen) {
+                  setIsOpen(true);
+                  const target = e.currentTarget;
+                  setTimeout(() => {
+                    try {
+                      target.select();
+                    } catch {}
+                  }, 0);
+                }
+              }
+            }}
+            onKeyDown={handleKeyDown}
+            required={required && !value && !(isTyping && search.trim())}
+          />
+        </div>
+        <button
+          type="button"
+          tabIndex={-1}
           disabled={disabled}
           onClick={(e) => {
             e.stopPropagation();
-            if (!isOpen) setIsOpen(true);
+            if (disabled) return;
+            if (isOpen) {
+              setIsOpen(false);
+              setIsTyping(false);
+            } else {
+              setIsOpen(true);
+              inputRef.current?.focus();
+            }
           }}
-        />
-        <div className="flex items-center gap-1.5 text-slate-400 mr-2">
-          {isOpen ? (
-            <Search className="w-3.5 h-3.5 text-indigo-500" />
-          ) : (
-            <ChevronDown className="w-4 h-4 transition-transform duration-200" />
-          )}
-        </div>
+          className="text-slate-400 hover:text-slate-600 p-0.5 transition-transform duration-200"
+          style={{ transform: isOpen ? "rotate(180deg)" : "rotate(0deg)" }}
+        >
+          <ChevronDown className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Dropdown Options Panel */}
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.15 }}
-            className="absolute z-50 w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-lg max-h-60 overflow-y-auto"
-          >
-            {/* List options */}
-            <div className="py-1 text-xs">
-              {filteredOptions.length === 0 && !allowCustom && (
-                <div className="px-4 py-3 text-slate-400 font-light text-center">{emptyMessage}</div>
-              )}
+      {isOpen && !disabled && (
+        <div className="absolute z-50 w-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-60 flex flex-col overflow-hidden">
+          <div className="overflow-y-auto flex-1 divide-y divide-slate-50">
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map((opt, idx) => {
+                const optKey = getOptionKey(opt);
+                const isSelected = optKey === value;
+                const isHighlighted = idx === highlightedIndex;
+                const prevGroup = idx > 0 ? filteredOptions[idx - 1].group : null;
+                const showGroupHeader = opt.group && opt.group !== prevGroup;
 
-              {/* Render ungrouped options */}
-              {!hasGroups &&
-                filteredOptions.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => handleSelect(opt.value)}
-                    className={`flex items-center justify-between w-full px-4 py-2 text-right transition-colors hover:bg-slate-50 cursor-pointer ${
-                      value === opt.value ? "bg-indigo-50/70 text-indigo-700 font-semibold" : "text-slate-700"
-                    }`}
-                  >
-                    <div className="flex flex-col">
-                      <span className="text-xs">{opt.label}</span>
-                      {opt.subLabel && <span className="text-[10px] text-slate-400 mt-0.5">{opt.subLabel}</span>}
-                    </div>
-                    {value === opt.value && <Check className="w-3.5 h-3.5 text-indigo-600" />}
-                  </button>
-                ))}
-
-              {/* Render grouped options */}
-              {hasGroups && (
-                <>
-                  {noGroupOptions.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => handleSelect(opt.value)}
-                      className={`flex items-center justify-between w-full px-4 py-2 text-right transition-colors hover:bg-slate-50 cursor-pointer ${
-                        value === opt.value ? "bg-indigo-50/70 text-indigo-700 font-semibold" : "text-slate-700"
-                      }`}
-                    >
-                      <div className="flex flex-col">
-                        <span className="text-xs">{opt.label}</span>
-                        {opt.subLabel && <span className="text-[10px] text-slate-400 mt-0.5">{opt.subLabel}</span>}
+                return (
+                  <React.Fragment key={`${optKey}_${idx}`}>
+                    {showGroupHeader && (
+                      <div className="px-3 py-1 bg-slate-100/80 text-[10px] font-bold text-slate-500 sticky top-0">
+                        {opt.group}
                       </div>
-                      {value === opt.value && <Check className="w-3.5 h-3.5 text-indigo-600" />}
-                    </button>
-                  ))}
-
-                  {Object.entries(groupedOptions).map(([group, groupOpts]) => (
-                    <div key={group} className="border-b last:border-b-0 border-slate-50">
-                      <div className="px-3.5 py-1.5 bg-slate-50/80 text-[10px] font-extrabold text-slate-500 tracking-wider">
-                        {group}
-                      </div>
-                      {groupOpts.map((opt) => (
-                        <button
-                          key={opt.value}
-                          type="button"
-                          onClick={() => handleSelect(opt.value)}
-                          className={`flex items-center justify-between w-full px-4 py-2 text-right transition-colors hover:bg-slate-50 cursor-pointer ${
-                            value === opt.value ? "bg-indigo-50/70 text-indigo-700 font-semibold" : "text-slate-700"
-                          }`}
-                        >
-                          <div className="flex flex-col">
-                            <span className="text-xs">{opt.label}</span>
-                            {opt.subLabel && <span className="text-[10px] text-slate-400 mt-0.5">{opt.subLabel}</span>}
-                          </div>
-                          {value === opt.value && <Check className="w-3.5 h-3.5 text-indigo-600" />}
-                        </button>
-                      ))}
-                    </div>
-                  ))}
-                </>
-              )}
-
-              {/* Add Custom Option Row */}
-              {allowCustom && search.trim() !== "" && !options.some((opt) => opt.label.trim() === search.trim()) && (
-                <div className="border-t border-slate-100 mt-1 p-1">
-                  <button
-                    type="button"
-                    onClick={handleAddCustom}
-                    disabled={isAdding}
-                    className="flex items-center justify-center gap-1.5 w-full py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg transition-all text-xs cursor-pointer"
-                  >
-                    {isAdding ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
-                    ) : (
-                      <Plus className="w-3.5 h-3.5" />
                     )}
-                    <span>
-                      {customAddLabel}: <strong className="underline">"{search.trim()}"</strong>
-                    </span>
-                  </button>
-                </div>
-              )}
+                    <button
+                      type="button"
+                      onClick={() => handleSelect(opt)}
+                      onMouseEnter={() => setHighlightedIndex(idx)}
+                      className={`w-full text-right px-3 py-2 text-xs flex items-center justify-between transition-colors cursor-pointer ${
+                        isHighlighted ? "bg-indigo-50/80 text-indigo-900" : "text-slate-700 hover:bg-slate-50"
+                      } ${isSelected ? "font-bold bg-indigo-50/40 text-indigo-600" : ""}`}
+                    >
+                      <div className="truncate pr-1">
+                        <div>{opt.label}</div>
+                        {opt.subLabel && (
+                          <div className="text-[10px] text-slate-400 font-normal truncate mt-0.5">
+                            {opt.subLabel}
+                          </div>
+                        )}
+                      </div>
+                      {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                    </button>
+                  </React.Fragment>
+                );
+              })
+            ) : (
+              <div className="px-3 py-4 text-center text-slate-400 text-xs">
+                {emptyMessage}
+              </div>
+            )}
+          </div>
+
+          {customAction && (
+            <div className="p-1.5 bg-slate-50 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  const currentTerm = isTyping ? search.trim() : "";
+                  setIsTyping(false);
+                  setIsOpen(false);
+                  customAction(currentTerm);
+                }}
+                className="w-full py-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{customAddLabel}</span>
+                {isTyping && search.trim() && (
+                  <span className="font-normal text-[10px] bg-indigo-100 px-1.5 py-0.5 rounded text-indigo-800 truncate max-w-[120px]">
+                    "{search.trim()}"
+                  </span>
+                )}
+              </button>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default SearchableCombobox;

@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
 import { getTodayShamsiString } from "../utils/shamsi";
+import { toEnglishDigits } from "../utils/digits";
 
 interface PayrollTimesheetsProps {
   db: DatabaseSchema;
@@ -21,32 +22,23 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
   // Filter contacts to subcontractors/workers or other active parties
   const workers = db.contacts.filter(c => c.role === "subcontractor" || c.role === "imprest_holder" || c.role === "admin" || c.role === "supplier");
 
-  // Sync state with db.timesheets & db.payrolls (with localStorage fallback)
+  // Sync state with db.timesheets & db.payrolls (default empty)
   const [timesheets, setTimesheets] = useState<TimesheetItem[]>(() => {
-    if (db.timesheets && db.timesheets.length > 0) return db.timesheets;
-    const saved = localStorage.getItem("ns_timesheets");
-    if (saved) return JSON.parse(saved);
-    return [
-      { id: "ts1", projectId: "p1", contactId: "co3", date: "1403/03/10", hoursWorked: 8, dailyRate: 150000, totalAmount: 1200000, description: "نظارت بر آرماتوربندی ستون‌ها" },
-      { id: "ts2", projectId: "p1", contactId: "co4", date: "1403/03/12", hoursWorked: 10, dailyRate: 180000, totalAmount: 1800000, description: "تخلیه بتن‌ریزی فونداسیون" }
-    ];
+    if (Array.isArray(db.timesheets)) return db.timesheets;
+    return [];
   });
 
   const [payrolls, setPayrolls] = useState<PayrollItem[]>(() => {
-    if (db.payrolls && db.payrolls.length > 0) return db.payrolls;
-    const saved = localStorage.getItem("ns_payrolls");
-    if (saved) return JSON.parse(saved);
-    return [
-      { id: "pr1", projectId: "p1", contactId: "co3", amount: 1200000000, paymentDate: "1403/02/18", accountId: "a3", description: "پرداخت قسط اول دستمزد آرماتوربندی قاسمی", transactionId: "t2" }
-    ];
+    if (Array.isArray(db.payrolls)) return db.payrolls;
+    return [];
   });
 
   useEffect(() => {
-    if (db.timesheets) {
+    if (Array.isArray(db.timesheets)) {
       setTimesheets(db.timesheets);
       localStorage.setItem("ns_timesheets", JSON.stringify(db.timesheets));
     }
-    if (db.payrolls) {
+    if (Array.isArray(db.payrolls)) {
       setPayrolls(db.payrolls);
       localStorage.setItem("ns_payrolls", JSON.stringify(db.payrolls));
     }
@@ -67,6 +59,26 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
   const [prDate, setPrDate] = useState(() => getTodayShamsiString());
   const [prAccountId, setPrAccountId] = useState(db.accounts[0]?.id || "");
   const [prDesc, setPrDesc] = useState("");
+
+  useEffect(() => {
+    if (projects.length > 0) {
+      if (!tsProjectId || !projects.some(p => p.id === tsProjectId)) setTsProjectId(projects[0].id);
+      if (!prProjectId || !projects.some(p => p.id === prProjectId)) setPrProjectId(projects[0].id);
+    }
+  }, [projects, tsProjectId, prProjectId]);
+
+  useEffect(() => {
+    if (workers.length > 0) {
+      if (!tsContactId || !workers.some(w => w.id === tsContactId)) setTsContactId(workers[0].id);
+      if (!prContactId || !workers.some(w => w.id === prContactId)) setPrContactId(workers[0].id);
+    }
+  }, [workers, tsContactId, prContactId]);
+
+  useEffect(() => {
+    if (db.accounts.length > 0 && (!prAccountId || !db.accounts.some(a => a.id === prAccountId))) {
+      setPrAccountId(db.accounts[0].id);
+    }
+  }, [db.accounts, prAccountId]);
 
   const formatTomans = (num: number) => {
     return new Intl.NumberFormat("fa-IR").format(num) + " ریال";
@@ -298,11 +310,12 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
                   <div className="space-y-1">
                     <label className="text-slate-500 font-bold">میزان کارکرد (ساعت/روز):</label>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       placeholder="مثال: ۸"
                       value={tsHours}
-                      onChange={e => setTsHours(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-500"
+                      onChange={e => setTsHours(toEnglishDigits(e.target.value).replace(/[^0-9.]/g, ""))}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-mono"
                       required
                     />
                   </div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { toEnglishDigits } from "../utils/digits";
 
 interface FormattedAmountInputProps {
   value: string | number;
@@ -10,16 +11,6 @@ interface FormattedAmountInputProps {
   id?: string;
 }
 
-// Convert Farsi digits to English
-function toEnglishDigits(str: string): string {
-  const farsiDigits = [/۰/g, /۱/g, /۲/g, /۳/g, /۴/g, /۵/g, /۶/g, /۷/g, /۸/g, /۹/g];
-  let res = str;
-  for (let i = 0; i < 10; i++) {
-    res = res.replace(farsiDigits[i], String(i));
-  }
-  return res;
-}
-
 export function FormattedAmountInput({
   value,
   onChange,
@@ -29,18 +20,16 @@ export function FormattedAmountInput({
   disabled = false,
   id
 }: FormattedAmountInputProps) {
-  // Local state to manage the formatted string
   const [displayValue, setDisplayValue] = useState("");
 
   const formatWithCommas = (val: string | number): string => {
     if (val === undefined || val === null || val === "") return "";
-    // convert farsi to english
     const engStr = toEnglishDigits(String(val));
     const isNegative = engStr.trim().startsWith("-");
-    // extract digits
     const cleanStr = engStr.replace(/,/g, "").replace(/[^\d]/g, "");
     if (!cleanStr) return isNegative ? "-" : "";
-    return (isNegative ? "-" : "") + Number(cleanStr).toLocaleString("en-US");
+    const normalized = cleanStr.replace(/^0+(?=\d)/, "");
+    return (isNegative ? "-" : "") + normalized.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   };
 
   useEffect(() => {
@@ -50,17 +39,19 @@ export function FormattedAmountInput({
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const rawInput = e.target.value;
     const englishInput = toEnglishDigits(rawInput);
-    
+
     const isNegative = englishInput.trim().startsWith("-");
-    // Extract only numbers/digits
     const digitsOnly = englishInput.replace(/,/g, "").replace(/[^\d]/g, "");
-    
-    // Set formatted version locally so the input cursor/rendering feels smooth
-    const finalDisplay = digitsOnly ? (isNegative ? "-" : "") + Number(digitsOnly).toLocaleString("en-US") : (isNegative ? "-" : "");
+    const normalized = digitsOnly.replace(/^0+(?=\d)/, "");
+
+    const finalDisplay = normalized
+      ? (isNegative ? "-" : "") + normalized.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+      : isNegative
+      ? "-"
+      : "";
     setDisplayValue(finalDisplay);
-    
-    // Notify parent state of the clean string
-    onChange(digitsOnly ? (isNegative ? "-" : "") + digitsOnly : (isNegative ? "-" : ""));
+
+    onChange(normalized ? (isNegative ? "-" : "") + normalized : isNegative ? "-" : "");
   };
 
   return (

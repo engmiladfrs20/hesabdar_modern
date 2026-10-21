@@ -1,6 +1,7 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Transaction, Account, Project, Contact } from "../types";
 import { getTodayShamsiString } from "../utils/shamsi";
+import { toEnglishDigits } from "../utils/digits";
 import { Plus, Landmark, DollarSign, Receipt, FileText, ArrowUpRight, ArrowDownRight, Paperclip, Search, Sparkles, SlidersHorizontal, Download, CreditCard, Edit, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
 import { CONSTRUCTION_STAGES } from "../data/constructionStages";
@@ -14,7 +15,7 @@ interface TransactionsManagerProps {
   projects: Project[];
   contacts?: Contact[];
   activeUser?: any;
-  onAddTransaction: (tx: Partial<Transaction>) => void;
+  onAddTransaction: (tx: Partial<Transaction>) => Promise<boolean | void> | boolean | void;
   onAddAccount: (acc: Partial<Account>) => void;
   onAddContact?: (contact: Partial<Contact>) => Promise<boolean | void> | boolean | void;
   onAddProject?: (project: Partial<Project>) => Promise<boolean | void> | boolean | void;
@@ -24,6 +25,8 @@ interface TransactionsManagerProps {
     date: string;
     accountId?: string;
     referenceNumber?: string;
+    invoiceNumber?: string;
+    invoiceDescription?: string;
     settlementMethod?: string;
     paymentStatus?: string;
     destinationAccount?: string;
@@ -139,6 +142,7 @@ export default function TransactionsManager({
   const [txAccount, setTxAccount] = useState(accounts[0]?.id || "");
   const [txPerson, setTxPerson] = useState("");
   const [txDate, setTxDate] = useState(() => getTodayShamsiString());
+  const [txInvoiceNum, setTxInvoiceNum] = useState("");
   const [txDesc, setTxDesc] = useState("");
   const [isNonCash, setIsNonCash] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -156,6 +160,7 @@ export default function TransactionsManager({
   const [payDocDate, setPayDocDate] = useState(() => getTodayShamsiString());
   const [payDocAccountId, setPayDocAccountId] = useState(accounts[0]?.id || "");
   const [payDocRefNum, setPayDocRefNum] = useState("");
+  const [payDocInvoiceNum, setPayDocInvoiceNum] = useState("");
   const [payDocMethod, setPayDocMethod] = useState("فیش بانکی");
   const [payDocStatus, setPayDocStatus] = useState("تایید نهایی");
   const [payDocDestAcc, setPayDocDestAcc] = useState("");
@@ -184,8 +189,32 @@ export default function TransactionsManager({
   const [payAmount, setPayAmount] = useState("");
   const [payDate, setPayDate] = useState(() => getTodayShamsiString());
   const [payAccount, setPayAccount] = useState(accounts[0]?.id || "");
+  const [payInvoiceNum, setPayInvoiceNum] = useState("");
   const [payRef, setPayRef] = useState("");
   const [payDesc, setPayDesc] = useState("");
+
+  // Sync default project and account IDs when projects or accounts list updates
+  useEffect(() => {
+    if (!txProjId && projects.length > 0) {
+      setTxProjId(projects[0].id);
+    }
+  }, [projects, txProjId]);
+
+  useEffect(() => {
+    if (accounts.length > 0) {
+      if (!txAccount) setTxAccount(accounts[0].id);
+      if (!payDocAccountId) setPayDocAccountId(accounts[0].id);
+      if (!payAccount) setPayAccount(accounts[0].id);
+    }
+  }, [accounts, txAccount, payDocAccountId, payAccount]);
+
+  // Keep selectedTxForPayments in sync with updated transactions prop
+  useEffect(() => {
+    if (selectedTxForPayments) {
+      const updated = transactions.find(t => t.id === selectedTxForPayments.id);
+      if (updated) setSelectedTxForPayments(updated);
+    }
+  }, [transactions]);
 
   // Modals for quick adding missing details
   const [showContactModal, setShowContactModal] = useState(false);
@@ -349,62 +378,87 @@ export default function TransactionsManager({
     }
   };
 
-  const handleSubmitTransaction = (e: React.FormEvent) => {
+  const handleSubmitTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
-    if (isNonCash) {
-      if (!txPerson) {
-        setFormError("انتخاب طرف حساب برای ثبت سند تهاتر الزامی است.");
-        return;
-      }
-      if (!txAmount || Number(txAmount) <= 0) {
-        setFormError("وارد کردن مبلغ برای ثبت سند تهاتر الزامی است.");
-        return;
-      }
-      if (!txDesc || txDesc.trim().length === 0) {
-        setFormError("شرح سند/فاکتور برای ثبت سند تهاتر الزامی است.");
-        return;
-      }
-      if (!txSubCat) {
-        setFormError("انتخاب مرحله ساخت جهت هزینه‌یابی برای ثبت سند تهاتر الزامی است.");
-        return;
-      }
-    } else {
-      if (!txAmount || !txPerson) {
-        setFormError("لطفاً فیلدهای مبلغ و طرف حساب را تکمیل کنید.");
-        return;
-      }
+    // If user left the inline payment slip sub-form open with an amount entered, auto-include it
+    let finalPayments = [...newPayments];
+    const cleanPayDocAmt = Number(toEnglishDigits(payDocAmount).replace(/,/g, "")) || 0;
+    if (isAddingPaymentDoc && cleanPayDocAmt > 0) {
+      finalPayments.push({
+        id: "p_" + Date.now(),
+        amount: cleanPayDocAmt,
+        date: payDocDate || txDate || getTodayShamsiString(),
+        accountId: payDocAccountId || txAccount || accounts[0]?.id || "a1",
+        referenceNumber: payDocRefNum || "ثبت مستقیم",
+        invoiceNumber: payDocInvoiceNum || txInvoiceNum || "",
+        invoiceDescription: payDocDesc || txDesc || "",
+        settlementMethod: payDocMethod,
+        paymentStatus: payDocStatus,
+        destinationAccount: payDocDestAcc,
+        receiptFileName: payDocReceiptName,
+        receiptFileData: payDocReceiptData,
+        description: payDocDesc || txDesc || ""
+      });
     }
 
-    onAddTransaction({
+    const sumPaymentsAmt = finalPayments.reduce((s, p) => s + Number(p.amount || 0), 0);
+    const cleanTxAmt = Number(toEnglishDigits(txAmount).replace(/,/g, "")) || 0;
+    const cleanBarterAmt = Number(toEnglishDigits(barterValue).replace(/,/g, "")) || 0;
+    const numericAmount = cleanTxAmt > 0 ? cleanTxAmt : (sumPaymentsAmt > 0 ? sumPaymentsAmt : cleanBarterAmt);
+
+    const resolvedPerson = txPerson.trim() || payDocDestAcc.trim();
+    const resolvedInvNum = txInvoiceNum.trim() || finalPayments.find(p => p.invoiceNumber)?.invoiceNumber || "";
+    const resolvedDesc = txDesc.trim() || finalPayments.find(p => p.invoiceDescription)?.invoiceDescription || barterProperty.trim() || `${txCat || (txType === "income" ? "پیش‌فروش" : "خرید مصالح")}${resolvedPerson ? " - " + resolvedPerson : ""}`;
+    const resolvedSubCat = txSubCat || (isNonCash ? (activeProject?.currentStage || "اسکلت بتنی") : undefined);
+
+    if (numericAmount <= 0) {
+      setFormError("لطفاً مبلغ سند فاکتور یا مبلغ فیش پرداختی را وارد نمایید.");
+      return;
+    }
+    if (!resolvedPerson) {
+      setFormError("لطفاً نام طرف حساب (شخص/پیمانکار/خریدار) را انتخاب یا تایپ نمایید.");
+      return;
+    }
+
+    const validProjId = projects.some(p => p.id === txProjId) ? txProjId : (projects[0]?.id || "p1");
+
+    const res = await onAddTransaction({
       id: editingTxId || undefined,
-      projectId: isBarterContact ? (selectedContact?.projectId || txProjId) : txProjId,
+      projectId: isBarterContact ? (selectedContact?.projectId || validProjId) : validProjId,
       type: txType,
-      category: txCat,
-      subCategory: txSubCat || undefined,
-      amount: Number(txAmount),
-      accountId: txAccount,
-      personName: txPerson,
-      date: txDate,
-      description: txDesc,
+      category: txCat || (txType === "income" ? "پیش‌فروش" : "خرید مصالح"),
+      subCategory: resolvedSubCat,
+      amount: numericAmount,
+      accountId: txAccount || accounts[0]?.id || "a1",
+      personName: resolvedPerson,
+      date: txDate || getTodayShamsiString(),
+      invoiceNumber: resolvedInvNum || undefined,
+      description: resolvedDesc,
       isNonCash: isNonCash,
       barterDetails: isNonCash ? {
         propertyType: isBarterContact ? "واحد تهاتر شده ثبت شده" : "ملک/دارایی تهاتری",
         description: isBarterContact 
           ? (selectedContact?.barterUnits?.map(bu => bu.unitId === "after_scoring" ? "تعیین واحد بعد از امتیازدهی" : `واحد شماره ${bu.unitId.split("_").pop()}`).join(" - ") || "قرارداد تهاتر طرف حساب")
-          : (barterProperty || txDesc),
-        agreedValue: isBarterContact ? Number(txAmount) : Number(barterValue || txAmount)
+          : (barterProperty || resolvedDesc),
+        agreedValue: isBarterContact ? numericAmount : (cleanBarterAmt || numericAmount)
       } : undefined,
       attachmentName: attachedFileName || undefined,
       attachmentData: attachedFileData || undefined,
       paymentStatus: isNonCash ? "paid" : (txType === "expense" ? txPaymentStatus : "paid"),
-      payments: newPayments
+      payments: finalPayments
     });
+
+    if (res === false) {
+      setFormError("خطا در ثبت نهایی فاکتور در سرور. لطفاً مقادیر وارد شده را بررسی کنید.");
+      return;
+    }
 
     // Reset Form
     setTxAmount("");
     setTxPerson("");
+    setTxInvoiceNum("");
     setTxDesc("");
     setIsNonCash(false);
     setBarterProperty("");
@@ -414,6 +468,11 @@ export default function TransactionsManager({
     setTxPaymentStatus("paid");
     setEditingTxId(null);
     setNewPayments([]);
+    setIsAddingPaymentDoc(false);
+    setPayDocAmount("");
+    setPayDocRefNum("");
+    setPayDocInvoiceNum("");
+    setPayDocDesc("");
     setFormError(null);
     setActiveSubTab("logs");
   };
@@ -428,6 +487,7 @@ export default function TransactionsManager({
     setTxAccount(tx.accountId);
     setTxPerson(tx.personName || "");
     setTxDate(tx.date);
+    setTxInvoiceNum(tx.invoiceNumber || "");
     setTxDesc(tx.description || "");
     setIsNonCash(!!tx.isNonCash);
     setTxPaymentStatus((tx.paymentStatus as any) || "paid");
@@ -484,17 +544,19 @@ export default function TransactionsManager({
         transactionId: selectedTxForPayments.id,
         amount: Number(payAmount),
         date: payDate,
-        accountId: payAccount || undefined,
+        accountId: payAccount || accounts[0]?.id || undefined,
         referenceNumber: payRef || undefined,
-        description: payDesc || undefined
+        invoiceNumber: payInvoiceNum || selectedTxForPayments.invoiceNumber || undefined,
+        invoiceDescription: payDesc || selectedTxForPayments.description || undefined,
+        description: payDesc || selectedTxForPayments.description || undefined
       });
     }
 
     // Reset Form
     setPayAmount("");
+    setPayInvoiceNum("");
     setPayRef("");
     setPayDesc("");
-    setSelectedTxForPayments(null);
   };
 
   // Filter and search logic
@@ -962,9 +1024,11 @@ export default function TransactionsManager({
               <table className="w-full text-xs text-right border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-medium">
+                    <th className="p-4 text-center">ردیف</th>
+                    <th className="p-4 text-center">شماره فاکتور</th>
                     <th className="p-4">تاریخ</th>
                     <th className="p-4">طرف حساب</th>
-                    <th className="p-4">شرح تراکنش</th>
+                    <th className="p-4">شرح فاکتور / تراکنش</th>
                     <th className="p-4">دسته بندی</th>
                     <th className="p-4">منبع مالی</th>
                     <th className="p-4 text-left">مبلغ (ریال)</th>
@@ -976,10 +1040,10 @@ export default function TransactionsManager({
                 <tbody className="divide-y divide-slate-100 text-slate-700">
                   {filteredTx.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="text-center py-12 text-slate-400 font-light text-sm">هیچ تراکنشی متناسب با فیلتر انتخابی شما یافت نشد.</td>
+                      <td colSpan={11} className="text-center py-12 text-slate-400 font-light text-sm">هیچ تراکنشی متناسب با فیلتر انتخابی شما یافت نشد.</td>
                     </tr>
                   ) : (
-                    filteredTx.map(tx => {
+                    filteredTx.map((tx, idx) => {
                       const acc = accounts.find(a => a.id === tx.accountId);
                       const isIncome = tx.type === "income";
 
@@ -988,9 +1052,12 @@ export default function TransactionsManager({
                       const maxPayable = tx.type === "expense" && tx.approvedAmount !== undefined ? tx.approvedAmount : tx.amount;
                       const remainingToPay = Math.max(0, maxPayable - totalPaid);
                       const paymentStatus = tx.paymentStatus || (tx.type === "income" ? "paid" : "unpaid");
+                      const displayInvNum = tx.invoiceNumber || tx.payments?.find(p => p.invoiceNumber)?.invoiceNumber || "—";
 
                       return (
                         <tr key={tx.id} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="p-4 text-center font-mono font-bold text-slate-500">{toFarsiDigits(idx + 1)}</td>
+                          <td className="p-4 text-center font-mono font-bold text-indigo-700">{toFarsiDigits(displayInvNum)}</td>
                           <td className="p-4 font-mono font-medium text-slate-500">{toFarsiDigits(tx.date)}</td>
                           <td className="p-4 font-semibold text-slate-800">{tx.personName}</td>
                           <td className="p-4 max-w-[220px] truncate font-light text-slate-600">{tx.description}</td>
@@ -1024,10 +1091,19 @@ export default function TransactionsManager({
                               </div>
                             )}
                             {isIncome ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                دریافت شده
-                              </span>
+                              <div className="flex flex-col items-center gap-1">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                  دریافت شده
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedTxForPayments(tx)}
+                                  className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5 cursor-pointer"
+                                >
+                                  مشاهده/ثبت اسناد دریافت
+                                </button>
+                              </div>
                             ) : tx.isNonCash ? (
                               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-bold">
                                 تسویه تهاتری
@@ -1044,23 +1120,17 @@ export default function TransactionsManager({
                                   </span>
                                 ) : (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-150 text-[10px] font-bold">
-                                    پرداخت نشده {tx.approvalStatus !== "approved" && "(عدم تأیید)"}
+                                    پرداخت نشده
                                   </span>
                                 )}
                                 
-                                {tx.approvalStatus === "approved" ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedTxForPayments(tx)}
-                                    className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5 cursor-pointer"
-                                  >
-                                    {paymentStatus === "paid" ? "مشاهده اسناد پرداخت" : "ثبت/مشاهده پرداخت‌ها"}
-                                  </button>
-                                ) : (
-                                  <span className="mt-1 text-[8px] text-rose-600 bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded font-bold">
-                                    🔐 قفل شده (نیاز به تایید مدیر ارشد)
-                                  </span>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedTxForPayments(tx)}
+                                  className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5 cursor-pointer"
+                                >
+                                  {paymentStatus === "paid" ? "مشاهده اسناد پرداخت" : "ثبت/مشاهده پرداخت‌ها"}
+                                </button>
                               </div>
                             )}
                           </td>
@@ -1440,7 +1510,6 @@ export default function TransactionsManager({
                       value={txDate}
                       onChange={setTxDate}
                       className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500"
-                      required
                     />
                   </div>
 
@@ -1452,7 +1521,6 @@ export default function TransactionsManager({
                       value={txAmount}
                       onChange={setTxAmount}
                       className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-mono font-bold"
-                      required
                     />
                     {txAmount && Number(txAmount) > 0 && (
                       <div className={`text-[10px] font-bold mt-1 px-2.5 py-1 rounded-lg block leading-relaxed ${txType === "income" ? "text-emerald-700 bg-emerald-50/70 border border-emerald-150" : "text-rose-700 bg-rose-50/70 border border-rose-150"}`}>
@@ -1548,15 +1616,27 @@ export default function TransactionsManager({
                     </div>
                   </div>
 
-                  {/* Description */}
-                  <div className="col-span-full space-y-1.5">
-                    <label className="text-slate-500 font-semibold">توضیحات و شرح آرتیکل سند فاکتور</label>
-                    <textarea 
-                      placeholder="شرح خرید مصالح..."
-                      value={txDesc}
-                      onChange={e => setTxDesc(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 h-16 resize-none"
-                    />
+                  {/* Invoice Number & Description */}
+                  <div className="col-span-full grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-slate-500 font-semibold">شماره فاکتور</label>
+                      <input
+                        type="text"
+                        placeholder="مثال: ۱۴۰۳/۱۰۲"
+                        value={txInvoiceNum}
+                        onChange={e => setTxInvoiceNum(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-mono font-bold"
+                      />
+                    </div>
+                    <div className="sm:col-span-2 space-y-1.5">
+                      <label className="text-slate-500 font-semibold">شرح فاکتور / توضیحات آرتیکل سند</label>
+                      <textarea 
+                        placeholder="شرح فاکتور یا خرید مصالح..."
+                        value={txDesc}
+                        onChange={e => setTxDesc(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 h-16 resize-none"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1624,10 +1704,11 @@ export default function TransactionsManager({
                         setIsAddingPaymentDoc(!isAddingPaymentDoc);
                         setPayDocAmount(String(remaining > 0 ? remaining : ""));
                         setPayDocRefNum("");
+                        setPayDocInvoiceNum(txInvoiceNum || "");
                         setPayDocDestAcc("");
                         setPayDocReceiptName("");
                         setPayDocReceiptData("");
-                        setPayDocDesc("");
+                        setPayDocDesc(txDesc || "");
                       }}
                       className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[9px] font-bold transition-all cursor-pointer shadow-sm flex items-center gap-0.5"
                     >
@@ -1639,9 +1720,33 @@ export default function TransactionsManager({
                     <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 text-xs shadow-md">
                       <div className="border-b border-slate-100 pb-1.5 mb-1 flex items-center justify-between">
                         <span className="font-extrabold text-[10px] text-indigo-900">فرم افزودن فیش واریزی یا سند پرداخت بانکی</span>
+                        <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md font-mono font-bold text-[10px]">
+                          ردیف پرداخت: {toFarsiDigits(newPayments.length + 1)}
+                        </span>
                       </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-slate-500 font-bold">ردیف پرداخت</label>
+                          <input
+                            type="text"
+                            readOnly
+                            value={`ردیف ${toFarsiDigits(newPayments.length + 1)}`}
+                            className="w-full px-2.5 py-1.5 bg-slate-100 border border-slate-200 rounded-xl outline-none font-mono font-bold text-center text-slate-600"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-slate-500 font-bold">شماره فاکتور</label>
+                          <input
+                            type="text"
+                            value={payDocInvoiceNum}
+                            onChange={e => setPayDocInvoiceNum(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono font-bold"
+                            placeholder="شماره فاکتور مربوطه"
+                          />
+                        </div>
+
                         <div className="space-y-1">
                           <label className="text-slate-500 font-bold">مبلغ فیش (ریال) <span className="text-rose-500">*</span></label>
                           <FormattedAmountInput
@@ -1649,19 +1754,28 @@ export default function TransactionsManager({
                             onChange={setPayDocAmount}
                             className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-mono font-bold"
                             placeholder="مثال: ۵,۰۰۰,۰۰۰"
-                            required
+                          />
+                        </div>
+
+                        <div className="space-y-1 col-span-full">
+                          <label className="text-slate-500 font-bold">شرح فاکتور / بابت</label>
+                          <input
+                            type="text"
+                            value={payDocDesc}
+                            onChange={e => setPayDocDesc(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
+                            placeholder="مثال: بابت فاکتور خرید سیمان و مصالح مرحله اول"
                           />
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-slate-500 font-bold">شماره پیگیری / ارجاع سند <span className="text-rose-500">*</span></label>
+                          <label className="text-slate-500 font-bold">شماره پیگیری / ارجاع سند</label>
                           <input
                             type="text"
                             value={payDocRefNum}
                             onChange={e => setPayDocRefNum(e.target.value)}
                             className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono"
                             placeholder="کد پیگیری تراکنش"
-                            required
                           />
                         </div>
 
@@ -1690,7 +1804,7 @@ export default function TransactionsManager({
                             <option value="حواله پایا">حواله پایا / ساتنا</option>
                             <option value="چک">چک صیادی بانکی</option>
                             <option value="اینترنتی">درگاه پرداخت آنلاین</option>
-                            <option value="تهاتر">اعتبار تهatری</option>
+                            <option value="تهاتر">اعتبار تهاتری</option>
                           </select>
                         </div>
 
@@ -1724,18 +1838,6 @@ export default function TransactionsManager({
                             value={payDocDate}
                             onChange={setPayDocDate}
                             className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                            required
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-slate-500 font-bold">توضیحات پرداخت بابت فاکتور</label>
-                          <input
-                            type="text"
-                            value={payDocDesc}
-                            onChange={e => setPayDocDesc(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                            placeholder="مثال: واریز مرحله اول بابت خرید مصالح"
                           />
                         </div>
 
@@ -1771,28 +1873,31 @@ export default function TransactionsManager({
                         <button
                           type="button"
                           onClick={() => {
-                            if (!payDocAmount || !payDocRefNum) {
-                              alert("مبلغ و شماره پیگیری سند پرداخت الزامی است.");
+                            if (!payDocAmount || Number(payDocAmount) <= 0) {
+                              setFormError("لطفاً مبلغ فیش پرداختی را وارد نمایید.");
                               return;
                             }
                             const newSlip = {
                               id: "p_" + Date.now(),
                               amount: Number(payDocAmount),
                               date: payDocDate,
-                              accountId: payDocAccountId,
-                              referenceNumber: payDocRefNum,
+                              accountId: payDocAccountId || accounts[0]?.id || "a1",
+                              referenceNumber: payDocRefNum || "بدون شماره",
+                              invoiceNumber: payDocInvoiceNum || txInvoiceNum || "",
+                              invoiceDescription: payDocDesc || txDesc || "",
                               settlementMethod: payDocMethod,
                               paymentStatus: payDocStatus,
                               destinationAccount: payDocDestAcc,
                               receiptFileName: payDocReceiptName,
                               receiptFileData: payDocReceiptData,
-                              description: payDocDesc
+                              description: payDocDesc || txDesc || ""
                             };
                             setNewPayments([...newPayments, newSlip]);
                             
                             // Clear slip states
                             setPayDocAmount("");
                             setPayDocRefNum("");
+                            setPayDocInvoiceNum("");
                             setPayDocDestAcc("");
                             setPayDocReceiptName("");
                             setPayDocReceiptData("");
@@ -1801,7 +1906,7 @@ export default function TransactionsManager({
                           }}
                           className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-[10px] transition-all cursor-pointer shadow-sm"
                         >
-                          ✓ ثبت سند پرداخت
+                          ✓ ثبت ردیف پرداخت در لیست
                         </button>
                         <button
                           type="button"
@@ -1818,13 +1923,16 @@ export default function TransactionsManager({
                 {/* Payments Table List */}
                 {newPayments.length === 0 ? (
                   <div className="bg-white border border-slate-150 rounded-2xl p-6 text-center text-slate-400 text-[10px] italic font-light shadow-xs">
-                    هیچ فیش یا سند پرداختی برای این فاکتور وارد نشده است. بدهی در کارتابل نسیه حساب خواهد شد.
+                    هیچ فیش یا سند پرداختی جداگانه‌ای وارد نشده است (در صورت انتخاب «تسویه کامل نقدی»، سند پرداخت به صورت خودکار صادر می‌شود).
                   </div>
                 ) : (
                   <div className="bg-white border border-slate-150 rounded-2xl overflow-hidden shadow-xs">
                     <table className="w-full text-right border-collapse text-[10px] text-slate-600 font-sans">
                       <thead>
-                        <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 font-extrabold">
+                        <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-500 font-extrabold">
+                          <th className="p-2.5 text-center">ردیف</th>
+                          <th className="p-2.5 text-center">شماره فاکتور</th>
+                          <th className="p-2.5">شرح فاکتور</th>
                           <th className="p-2.5">مبلغ (ریال)</th>
                           <th className="p-2.5">کد پیگیری</th>
                           <th className="p-2.5">حساب مبدا</th>
@@ -1839,6 +1947,9 @@ export default function TransactionsManager({
                           const payAcc = accounts.find(a => a.id === p.accountId);
                           return (
                             <tr key={p.id} className="hover:bg-slate-50/50 transition-colors font-medium">
+                              <td className="p-2.5 font-mono font-bold text-center text-slate-500">{toFarsiDigits(idx + 1)}</td>
+                              <td className="p-2.5 font-mono font-bold text-center text-indigo-700">{toFarsiDigits(p.invoiceNumber || txInvoiceNum || "-")}</td>
+                              <td className="p-2.5 max-w-[140px] truncate" title={p.invoiceDescription || p.description || txDesc}>{p.invoiceDescription || p.description || txDesc || "-"}</td>
                               <td className="p-2.5 font-bold text-slate-800 font-mono text-left">{toFarsiDigits(p.amount.toLocaleString())}</td>
                               <td className="p-2.5 font-mono text-center">{toFarsiDigits(p.referenceNumber || "-")}</td>
                               <td className="p-2.5 font-sans">{payAcc?.name || "صندوق"}</td>
@@ -1854,7 +1965,7 @@ export default function TransactionsManager({
                                 {p.receiptFileName ? (
                                   <button
                                     type="button"
-                                    onClick={() => setViewingAttachment({ name: p.receiptFileName || "", data: p.receiptFileData || "", personName: "", date: p.date, amount: p.amount, attachmentName: p.receiptFileName || "" })}
+                                    onClick={() => setViewingAttachment({ name: p.receiptFileName || "", data: p.receiptFileData || "", personName: "", date: p.date, amount: p.amount, attachmentName: p.receiptFileName || "" } as any)}
                                     className="px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-100 rounded text-[9px] font-bold cursor-pointer"
                                   >
                                     مشاهده فیش
@@ -1881,6 +1992,12 @@ export default function TransactionsManager({
                 )}
               </div>
             </div>
+
+            {formError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-bold flex items-center gap-2">
+                <span>⚠️ {formError}</span>
+              </div>
+            )}
 
             {/* Submit and actions */}
             <div className="flex justify-end gap-2.5 pt-4 border-t border-slate-150">
@@ -2295,11 +2412,12 @@ export default function TransactionsManager({
                 <div>
                   <label className="text-[10px] text-slate-500 font-bold block mb-1">زیربنای کل (متر مربع)</label>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     placeholder="مثال: ۲۵۰۰"
                     value={projectModalArea}
-                    onChange={e => setProjectModalArea(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                    onChange={e => setProjectModalArea(toEnglishDigits(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 </div>
                 <div>
@@ -2560,22 +2678,26 @@ export default function TransactionsManager({
                       <table className="w-full text-[11px] text-right border-collapse">
                         <thead>
                           <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-bold">
+                            <th className="p-2.5 text-center">ردیف</th>
+                            <th className="p-2.5 text-center">شماره فاکتور</th>
+                            <th className="p-2.5">شرح فاکتور</th>
                             <th className="p-2.5">تاریخ</th>
                             <th className="p-2.5">حساب پرداخت‌کننده</th>
                             <th className="p-2.5">شماره سند / پیگیری</th>
-                            <th className="p-2.5">توضیحات</th>
                             <th className="p-2.5 text-left">مبلغ (ریال)</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-slate-700">
-                          {selectedTxForPayments.payments.map((p) => {
+                          {selectedTxForPayments.payments.map((p, idx) => {
                             const pAcc = accounts.find(a => a.id === p.accountId);
                             return (
                               <tr key={p.id} className="hover:bg-slate-50/40">
+                                <td className="p-2.5 text-center font-mono font-bold text-slate-500">{toFarsiDigits(idx + 1)}</td>
+                                <td className="p-2.5 text-center font-mono font-bold text-indigo-700">{toFarsiDigits(p.invoiceNumber || selectedTxForPayments.invoiceNumber || "—")}</td>
+                                <td className="p-2.5 text-slate-700">{p.invoiceDescription || p.description || selectedTxForPayments.description || "-"}</td>
                                 <td className="p-2.5 font-mono text-slate-500">{toFarsiDigits(p.date)}</td>
                                 <td className="p-2.5 font-semibold text-slate-800">{pAcc?.name || "صندوق نقدی"}</td>
                                 <td className="p-2.5 font-mono text-slate-600">{toFarsiDigits(p.referenceNumber || "بدون شماره")}</td>
-                                <td className="p-2.5 text-slate-500 font-light">{p.description || "-"}</td>
                                 <td className="p-2.5 font-bold text-left text-indigo-700 font-mono">{formatTomans(p.amount)}</td>
                               </tr>
                             );
@@ -2586,89 +2708,108 @@ export default function TransactionsManager({
                   )}
                 </div>
 
-                {/* Form to add a new installment/payment if not fully paid */}
-                {remainingToPay > 0 && (
-                  <form onSubmit={handlePaymentSubmit} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                    <h5 className="font-bold text-slate-800 text-[11px] flex items-center gap-1 border-b border-slate-200 pb-1.5">
-                      <Plus className="w-4 h-4 text-emerald-600" />
-                      ثبت سند پرداخت جدید (یک نوبت یا قسط جدید)
-                    </h5>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-500 font-bold block">مبلغ پرداختی (ریال) <span className="text-rose-500">*</span></label>
-                        <FormattedAmountInput
-                          required
-                          placeholder={`مثال: ${remainingToPay}`}
-                          value={payAmount}
-                          onChange={setPayAmount}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 font-mono"
-                        />
-                        {payAmount && Number(payAmount) > 0 && (
-                          <div className="text-[9px] font-bold mt-1 px-1.5 py-0.5 rounded bg-rose-50 border border-rose-150 text-rose-700 block max-w-xs">
-                            ✍️ {numberToPersianWords(Number(payAmount))} ریال
-                            <div className="mt-0.5 font-light">عددی: {Number(payAmount).toLocaleString("fa-IR")} ریال</div>
-                          </div>
-                        )}
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-500 font-bold block">تاریخ پرداخت (شمسی) <span className="text-rose-500">*</span></label>
-                        <ShamsiDatePicker
-                          required
-                          placeholder="مثال: ۱۴۰۳/۰۴/۰۳"
-                          value={payDate}
-                          onChange={setPayDate}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-500 font-bold block">بانک / منبع مالی پرداخت‌کننده</label>
-                        <select
-                          value={payAccount}
-                          onChange={e => setPayAccount(e.target.value)}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs focus:outline-none focus:border-indigo-500"
-                        >
-                          {accounts.map(a => (
-                            <option key={a.id} value={a.id}>{a.name} (موجودی: {formatTomans(a.balance)})</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-500 font-bold block">شماره پیگیری فیش / چک / حواله</label>
-                        <input
-                          type="text"
-                          placeholder="مثال: ۹۸۷۶۵۴۳۲"
-                          value={payRef}
-                          onChange={e => setPayRef(e.target.value)}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-left focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
+                {/* Form to add a new installment/payment */}
+                <form onSubmit={handlePaymentSubmit} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                  <h5 className="font-bold text-slate-800 text-[11px] flex items-center gap-1 border-b border-slate-200 pb-1.5">
+                    <Plus className="w-4 h-4 text-emerald-600" />
+                    ثبت ردیف پرداخت جدید برای فاکتور
+                  </h5>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">توضیحات سند پرداخت</label>
+                      <label className="text-[10px] text-slate-500 font-bold block">ردیف پرداخت</label>
                       <input
                         type="text"
-                        placeholder="مثال: پرداخت قسط اول سهم سیمان خریداری شده"
+                        readOnly
+                        value={`ردیف ${toFarsiDigits((selectedTxForPayments.payments?.length || 0) + 1)}`}
+                        className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-center text-slate-600 outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 font-bold block">شماره فاکتور</label>
+                      <input
+                        type="text"
+                        placeholder={selectedTxForPayments.invoiceNumber || "مثال: ۱۴۰۳/۱۰۲"}
+                        value={payInvoiceNum}
+                        onChange={e => setPayInvoiceNum(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 font-bold block">شرح فاکتور / توضیحات پرداخت</label>
+                      <input
+                        type="text"
+                        placeholder={selectedTxForPayments.description || "مثال: پرداخت قسط اول سیمان خریداری شده"}
                         value={payDesc}
                         onChange={e => setPayDesc(e.target.value)}
                         className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
                       />
                     </div>
+                  </div>
 
-                    <div className="pt-2 flex justify-end">
-                      <button
-                        type="submit"
-                        className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
-                      >
-                        <Receipt className="w-4 h-4" />
-                        ذخیره و ثبت رسمی سند پرداخت
-                      </button>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 font-bold block">مبلغ پرداختی (ریال) <span className="text-rose-500">*</span></label>
+                      <FormattedAmountInput
+                        required
+                        placeholder={`مثال: ${remainingToPay > 0 ? remainingToPay : selectedTxForPayments.amount}`}
+                        value={payAmount}
+                        onChange={setPayAmount}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 font-mono"
+                      />
+                      {payAmount && Number(payAmount) > 0 && (
+                        <div className="text-[9px] font-bold mt-1 px-1.5 py-0.5 rounded bg-rose-50 border border-rose-150 text-rose-700 block max-w-xs">
+                          ✍️ {numberToPersianWords(Number(payAmount))} ریال
+                          <div className="mt-0.5 font-light">عددی: {Number(payAmount).toLocaleString("fa-IR")} ریال</div>
+                        </div>
+                      )}
                     </div>
-                  </form>
-                )}
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 font-bold block">تاریخ پرداخت (شمسی) <span className="text-rose-500">*</span></label>
+                      <ShamsiDatePicker
+                        required
+                        placeholder="مثال: ۱۴۰۳/۰۴/۰۳"
+                        value={payDate}
+                        onChange={setPayDate}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 font-bold block">بانک / منبع مالی پرداخت‌کننده</label>
+                      <select
+                        value={payAccount}
+                        onChange={e => setPayAccount(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                      >
+                        {accounts.map(a => (
+                          <option key={a.id} value={a.id}>{a.name} (موجودی: {formatTomans(a.balance)})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500 font-bold block">شماره پیگیری فیش / چک / حواله</label>
+                      <input
+                        type="text"
+                        placeholder="مثال: ۹۸۷۶۵۴۳۲"
+                        value={payRef}
+                        onChange={e => setPayRef(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-left focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex justify-end">
+                    <button
+                      type="submit"
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                    >
+                      <Receipt className="w-4 h-4" />
+                      ذخیره و ثبت رسمی سند پرداخت
+                    </button>
+                  </div>
+                </form>
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex justify-end flex-shrink-0">

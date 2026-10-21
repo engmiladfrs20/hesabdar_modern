@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { CheckItem, Account, Project } from "../types";
 import { Clock, Plus, Search, Calendar, CheckSquare, RefreshCw, Landmark, AlertTriangle, Edit, Trash2 } from "lucide-react";
 import { motion } from "motion/react";
@@ -40,6 +40,18 @@ export default function CheckManager({
   // Clearance popup states
   const [clearingCheck, setClearingCheck] = useState<CheckItem | null>(null);
   const [clearanceAccount, setClearanceAccount] = useState(accounts[0]?.id || "");
+
+  useEffect(() => {
+    if (projects.length > 0 && (!chkProjId || !projects.some(p => p.id === chkProjId))) {
+      setChkProjId(projects[0].id);
+    }
+  }, [projects, chkProjId]);
+
+  useEffect(() => {
+    if (accounts.length > 0 && (!clearanceAccount || !accounts.some(a => a.id === clearanceAccount))) {
+      setClearanceAccount(accounts[0].id);
+    }
+  }, [accounts, clearanceAccount]);
 
   const formatTomans = (num: number) => {
     return new Intl.NumberFormat("fa-IR").format(num) + " ریال";

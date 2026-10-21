@@ -410,13 +410,16 @@ export default function App() {
     }
   };
 
-  const handleUpdateUnit = async (unitId: string, updatedData: Partial<UnitItem>) => {
+  const handleUpdateUnit = async (unitIdOrObj: string | Partial<UnitItem>, updatedData?: Partial<UnitItem>) => {
     setIsSyncing(true);
     try {
+      const payload = typeof unitIdOrObj === "string"
+        ? { id: unitIdOrObj, ...(updatedData || {}) }
+        : { ...unitIdOrObj, ...(updatedData || {}) };
       const response = await fetch(getApiUrl("/api/units"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: unitId, ...updatedData })
+        body: JSON.stringify(payload)
       });
       const data = await response.json();
       if (data.status === "success") {
@@ -431,13 +434,20 @@ export default function App() {
     }
   };
 
-  const handleAddUnitExpense = async (unitId: string, expense: { title: string; amount: number; date: string }) => {
+  const handleAddUnitExpense = async (
+    unitId: string,
+    expenseOrTitle: { title: string; amount: number; date?: string } | string,
+    amountArg?: number
+  ) => {
     setIsSyncing(true);
     try {
+      const expenseObj = typeof expenseOrTitle === "string"
+        ? { title: expenseOrTitle, amount: Number(amountArg) || 0, date: new Date().toLocaleDateString("fa-IR") }
+        : expenseOrTitle;
       const response = await fetch(getApiUrl("/api/units"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: unitId, addExpense: expense })
+        body: JSON.stringify({ id: unitId, addExpense: expenseObj })
       });
       const data = await response.json();
       if (data.status === "success") {
@@ -918,16 +928,19 @@ export default function App() {
           "Content-Type": "application/json",
           ...getB2Headers()
         },
-        body: JSON.stringify({ ...txData, companyId: activeCompanyId })
+        body: JSON.stringify({ ...txData, companyId: txData.companyId || activeCompanyId || "c1" })
       });
       const data = await response.json();
       if (data.status === "success") {
         setSyncSuccess(true);
         setTimeout(() => setSyncSuccess(false), 2000);
         await fetchDb();
+        return true;
       }
+      return false;
     } catch (err) {
       console.error("Error logging transaction:", err);
+      return false;
     } finally {
       setIsSyncing(false);
     }
@@ -938,6 +951,8 @@ export default function App() {
     amount: number;
     date: string;
     accountId?: string;
+    rowNumber?: number | string;
+    invoiceNumber?: string;
     referenceNumber?: string;
     settlementMethod?: string;
     paymentStatus?: string;
@@ -961,9 +976,12 @@ export default function App() {
         setSyncSuccess(true);
         setTimeout(() => setSyncSuccess(false), 2000);
         await fetchDb();
+        return true;
       }
+      return false;
     } catch (err) {
       console.error("Error submitting payment document:", err);
+      return false;
     } finally {
       setIsSyncing(false);
     }
@@ -1417,19 +1435,18 @@ export default function App() {
   }
 
   // Filter Data by active company to implement multi-company ("قابلیت چند شرکتی")
-  const hasCompanies = db.companies && db.companies.length > 0;
-  const allProjects = hasCompanies
-    ? db.projects.filter(p => !activeCompanyId || p.companyId === activeCompanyId)
+  const activeCompany = db.companies.find(c => c.id === activeCompanyId) || db.companies[0];
+  const hasMultipleCompanies = db.companies && db.companies.length > 1 && !!activeCompany;
+  const allProjects = hasMultipleCompanies
+    ? db.projects.filter(p => !p.companyId || p.companyId === activeCompany.id)
     : db.projects;
   const filteredProjects = allProjects.filter(p => !p.isDeleted);
-  const filteredTransactions = hasCompanies
-    ? db.transactions.filter(t => !activeCompanyId || t.companyId === activeCompanyId)
+  const filteredTransactions = hasMultipleCompanies
+    ? db.transactions.filter(t => !t.companyId || t.companyId === activeCompany.id)
     : db.transactions;
-  const filteredChecks = hasCompanies
-    ? db.checks.filter(c => !activeCompanyId || c.companyId === activeCompanyId)
+  const filteredChecks = hasMultipleCompanies
+    ? db.checks.filter(c => !c.companyId || c.companyId === activeCompany.id)
     : db.checks;
-
-  const activeCompany = db.companies.find(c => c.id === activeCompanyId);
   const activeUser = db.users.find(u => u.id === activeUserId) || db.users[0];
 
   const hasPermission = (permissionId: string) => {
@@ -1849,7 +1866,11 @@ export default function App() {
                   projects={allProjects}
                   units={db.units}
                   transactions={filteredTransactions}
+                  contacts={db.contacts}
+                  preSales={db.preSales}
+                  activeCompanyId={activeCompany?.id || activeCompanyId}
                   onAddProject={handleAddProject}
+                  onEditProject={handleAddProject}
                   onUpdateUnit={handleUpdateUnit}
                   onAddUnitExpense={handleAddUnitExpense}
                   onDeleteUnit={handleDeleteUnit}

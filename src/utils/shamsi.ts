@@ -107,3 +107,14 @@ export function getTodayShamsiString(): string {
   return `${jy}/${pad(jm)}/${pad(jd)}`;
 }
 
+export function toFarsiDigits(str: string | number | undefined | null): string {
+  if (str === undefined || str === null) return "";
+  const farsiDigits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
+  return String(str).replace(/[0-9]/g, (w) => farsiDigits[parseInt(w, 10)]);
+}
+
+export function formatRials(num: number | string | undefined | null): string {
+  const val = Number(num) || 0;
+  return new Intl.NumberFormat("fa-IR").format(val) + " ریال";
+}
+

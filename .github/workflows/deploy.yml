@@ -1,10 +1,11 @@
-# نمونه اصلاح‌شده برای فایل گیت‌هاب اکشن شما
-name: Deploy Construction Suite
+name: Deploy Construction Suite to Cloudflare
 
 on:
   push:
     branches:
       - main
+      - master
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -16,15 +17,22 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24 # استفاده از آخرین نسخه پایدار نود جی‌اس
+          node-version: 22
 
-      - name: Install Frontend Dependencies
+      - name: Install Dependencies
         run: npm install
 
-      - name: Build Frontend (Vite)
-        run: npx vite build # تولید فایل‌های استاتیک فرانت‌اند در پوشه dist برای کلودفلر
+      - name: Build Frontend Assets (Vite)
+        run: |
+          npx vite build
+          rm -f dist/server.cjs dist/server.cjs.map
 
-      - name: Deploy to Cloudflare Workers
+      - name: Apply Cloudflare D1 Schema Migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler d1 execute hesabdar_peymankar --remote --file=schema.sql || true
+
+      - name: Deploy Worker & Static Assets to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
