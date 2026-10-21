@@ -4,6 +4,27 @@ export interface Company {
   code: string;
 }
 
+export interface FloorUnitConfig {
+  floorNumber: number; // 0 for Ground floor (همکف), 1 for 1st floor, etc.
+  unitsCount: number;
+}
+
+export type UnitNumberingStyle =
+  | "block_floor_unit_short"
+  | "block_seq_padded"
+  | "block_unit"
+  | "floor_unit"
+  | "sequential";
+
+export interface ProjectBlockConfig {
+  name: string;
+  floors: number;
+  groundFloorUnits?: number;
+  unitsPerFloor: number;
+  floorConfigs?: FloorUnitConfig[];
+  totalUnits: number;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -16,6 +37,9 @@ export interface Project {
   status: "active" | "completed" | "paused";
   supervisorName?: string;
   numberOfUnits?: number;
+  numberOfBlocks?: number;
+  numberingStyle?: UnitNumberingStyle;
+  blocks?: ProjectBlockConfig[];
   defaultUnitArea?: number;
   defaultUnitPrice?: number;
   isDeleted?: boolean;

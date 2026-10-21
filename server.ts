@@ -1185,6 +1185,9 @@ app.post("/api/projects", (req, res) => {
     status: req.body.status || existingProj?.status || "active",
     supervisorName: req.body.supervisorName || existingProj?.supervisorName || "مهندس میلاد فرخی",
     numberOfUnits: (req.body.numberOfUnits ?? req.body.totalUnits) !== undefined ? Number(req.body.numberOfUnits ?? req.body.totalUnits) : existingProj?.numberOfUnits,
+    numberOfBlocks: req.body.numberOfBlocks !== undefined ? Number(req.body.numberOfBlocks) : existingProj?.numberOfBlocks,
+    numberingStyle: req.body.numberingStyle || existingProj?.numberingStyle || "block_floor_unit_short",
+    blocks: Array.isArray(req.body.blocks) ? req.body.blocks : existingProj?.blocks,
     defaultUnitArea: req.body.defaultUnitArea !== undefined ? Number(req.body.defaultUnitArea) : existingProj?.defaultUnitArea,
     defaultUnitPrice: req.body.defaultUnitPrice !== undefined ? Number(req.body.defaultUnitPrice) : existingProj?.defaultUnitPrice,
     isDeleted: req.body.isDeleted !== undefined ? !!req.body.isDeleted : existingProj?.isDeleted,
@@ -1197,39 +1200,146 @@ app.post("/api/projects", (req, res) => {
     db.projects.push(newProject);
   }
 
-  // Auto-generate units if requested (on new project or if numberOfUnits/totalUnits increased on edit)
-  // Note: Only number of units is specified in project management; block, area breakdown, and price are defined in contracts or unit edit modal.
-  const requestedUnitsCount = Number(req.body.numberOfUnits ?? req.body.totalUnits ?? 0);
-  if (requestedUnitsCount > 0) {
-    const requestedUnits = requestedUnitsCount;
-    const defArea = Number(req.body.defaultUnitArea || newProject.defaultUnitArea || 0);
-    const defPrice = Number(req.body.defaultUnitPrice || newProject.defaultUnitPrice || 0);
-    
-    if (!db.units) db.units = [];
-    const currentActiveUnits = db.units.filter(u => u.projectId === newProject.id && !u.isDeleted);
-    const startIdx = isNew ? 1 : (currentActiveUnits.length + 1);
+  // Auto-generate units based on automatic block structuring or requested unit count
+  if (!db.units) db.units = [];
+  const defArea = Number(req.body.defaultUnitArea || newProject.defaultUnitArea || 0);
+  const defPrice = Number(req.body.defaultUnitPrice || newProject.defaultUnitPrice || 0);
+  const currentActiveUnits = db.units.filter(u => u.projectId === newProject.id && !u.isDeleted);
 
-    if (requestedUnits >= startIdx) {
-      for (let i = startIdx; i <= requestedUnits; i++) {
-        const unitNumber = String(i);
-        const floor = String(Math.ceil(i / 2)); // 2 units per floor by default
-        db.units.push({
-          id: "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100),
-          projectId: newProject.id,
-          unitNumber,
-          blockName: "",
-          floor,
-          saleAreaType: "useful",
-          usefulArea: defArea,
-          storageArea: 0,
-          parkingArea: 0,
-          commonArea: 0,
-          area: defArea,
-          pricePerMeter: defPrice,
-          totalPrice: defArea * defPrice,
-          status: "available",
-          specificExpenses: []
-        });
+  if (isNew && Array.isArray(req.body.generatedUnits) && req.body.generatedUnits.length > 0) {
+    req.body.generatedUnits.forEach((gu: any, idx: number) => {
+      db.units.push({
+        id: "u_" + Date.now() + "_" + (idx + 1) + "_" + Math.floor(Math.random() * 1000),
+        projectId: newProject.id,
+        unitNumber: String(gu.unitNumber || (idx + 1)),
+        blockName: String(gu.blockName || ""),
+        floor: String(gu.floor ?? "1"),
+        saleAreaType: "useful",
+        usefulArea: defArea,
+        storageArea: 0,
+        parkingArea: 0,
+        commonArea: 0,
+        area: defArea,
+        pricePerMeter: defPrice,
+        totalPrice: defArea * defPrice,
+        status: "available",
+        specificExpenses: []
+      });
+    });
+    newProject.numberOfUnits = req.body.generatedUnits.length;
+  } else if (Array.isArray(req.body.blocks) && req.body.blocks.length > 0 && (isNew || req.body.syncBlockUnits)) {
+    const style = req.body.numberingStyle || "block_floor_unit_short";
+    let globalSeq = currentActiveUnits.length;
+    let totalGeneratedOrExisting = 0;
+
+    req.body.blocks.forEach((blk: any) => {
+      const bName = String(blk.name || "").trim();
+      const floors = Math.max(0, Number(blk.floors ?? 4));
+      const unitsPerFloor = Math.max(1, Number(blk.unitsPerFloor ?? 4));
+      const groundUnits = Math.max(0, Number(blk.groundFloorUnits ?? 0));
+
+      let floorConfigs: Array<{ floorNumber: number; unitsCount: number }> = [];
+      if (Array.isArray(blk.floorConfigs) && blk.floorConfigs.length > 0) {
+        floorConfigs = blk.floorConfigs.map((fc: any) => ({
+          floorNumber: Number(fc.floorNumber ?? 0),
+          unitsCount: Math.max(0, Number(fc.unitsCount ?? 0))
+        }));
+      } else {
+        if (groundUnits > 0) {
+          floorConfigs.push({ floorNumber: 0, unitsCount: groundUnits });
+        }
+        for (let f = 1; f <= floors; f++) {
+          floorConfigs.push({ floorNumber: f, unitsCount: unitsPerFloor });
+        }
+      }
+
+      const existingInBlock = currentActiveUnits.filter(u => (u.blockName || "") === bName);
+      let seqInBlock = 0;
+
+      floorConfigs.forEach(fc => {
+        for (let posInFloor = 1; posInFloor <= fc.unitsCount; posInFloor++) {
+          seqInBlock++;
+          totalGeneratedOrExisting++;
+          if (!isNew && seqInBlock <= existingInBlock.length) {
+            continue;
+          }
+          globalSeq++;
+          const floorNum = fc.floorNumber;
+          let unitNumber = `${bName}${floorNum}${posInFloor}`;
+          if (style === "block_floor_unit_short") {
+            unitNumber = bName ? `${bName}${floorNum}${posInFloor}` : `${floorNum}${posInFloor}`;
+          } else if (style === "block_seq_padded") {
+            const padded = String(seqInBlock).padStart(2, "0");
+            unitNumber = bName ? `${bName}${padded}` : padded;
+          } else if (style === "block_unit") {
+            const floorUnitCode = floorNum === 0 ? `0${posInFloor}` : String(floorNum * 100 + posInFloor);
+            unitNumber = bName ? `${bName}-${floorUnitCode}` : floorUnitCode;
+          } else if (style === "floor_unit") {
+            unitNumber = floorNum === 0 ? `0${posInFloor}` : String(floorNum * 100 + posInFloor);
+          } else if (style === "sequential") {
+            unitNumber = bName && req.body.blocks.length > 1 ? `${bName}-${seqInBlock}` : String(globalSeq);
+          }
+
+          db.units.push({
+            id: "u_" + Date.now() + "_" + globalSeq + "_" + Math.floor(Math.random() * 1000),
+            projectId: newProject.id,
+            unitNumber,
+            blockName: bName,
+            floor: String(floorNum),
+            saleAreaType: "useful",
+            usefulArea: defArea,
+            storageArea: 0,
+            parkingArea: 0,
+            commonArea: 0,
+            area: defArea,
+            pricePerMeter: defPrice,
+            totalPrice: defArea * defPrice,
+            status: "available",
+            specificExpenses: []
+          });
+        }
+      });
+    });
+    if (totalGeneratedOrExisting > 0) {
+      newProject.numberOfUnits = totalGeneratedOrExisting;
+    }
+  } else {
+    const requestedUnitsCount = Number(req.body.numberOfUnits ?? req.body.totalUnits ?? 0);
+    if (requestedUnitsCount > 0) {
+      const numBlocks = Math.max(1, Number(req.body.numberOfBlocks) || 1);
+      const blockLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
+      const startIdx = isNew ? 1 : (currentActiveUnits.length + 1);
+
+      if (requestedUnitsCount >= startIdx) {
+        const unitsPerBlock = Math.ceil(requestedUnitsCount / numBlocks);
+        for (let i = startIdx; i <= requestedUnitsCount; i++) {
+          const blockIdx = numBlocks > 1 ? Math.min(numBlocks - 1, Math.floor((i - 1) / unitsPerBlock)) : 0;
+          const bName = numBlocks > 1 ? (blockLabels[blockIdx] || `بلوک ${blockIdx + 1}`) : "";
+          const idxInBlock = numBlocks > 1 ? ((i - 1) % unitsPerBlock) + 1 : i;
+          const floor = String(Math.ceil(idxInBlock / 2));
+          const posInFloor = ((idxInBlock - 1) % 2) + 1;
+          const unitNumber = req.body.numberingStyle === "floor_unit"
+            ? String(Number(floor) * 100 + posInFloor)
+            : String(i);
+
+          db.units.push({
+            id: "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100),
+            projectId: newProject.id,
+            unitNumber,
+            blockName: bName,
+            floor,
+            saleAreaType: "useful",
+            usefulArea: defArea,
+            storageArea: 0,
+            parkingArea: 0,
+            commonArea: 0,
+            area: defArea,
+            pricePerMeter: defPrice,
+            totalPrice: defArea * defPrice,
+            status: "available",
+            specificExpenses: []
+          });
+        }
       }
     }
   }

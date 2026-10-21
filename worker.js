@@ -1736,7 +1736,12 @@ export default {
         const isNew = !existingProj;
         const pId = p.id || "p_" + Date.now();
         const stagesStr = JSON.stringify(p.stages || ["خاک‌برداری", "اسکلت", "سفت‌کاری", "تأسیسات", "نازک‌کاری", "نما", "پایان کار"]);
-        const requestedUnitsCount = Number(p.numberOfUnits ?? p.totalUnits ?? existingProj?.number_of_units ?? 0);
+        let requestedUnitsCount = Number(p.numberOfUnits ?? p.totalUnits ?? existingProj?.number_of_units ?? 0);
+        if (isNew && Array.isArray(p.generatedUnits) && p.generatedUnits.length > 0) {
+          requestedUnitsCount = p.generatedUnits.length;
+        } else if (Array.isArray(p.blocks) && p.blocks.length > 0 && requestedUnitsCount === 0) {
+          requestedUnitsCount = p.blocks.reduce((sum, blk) => sum + (Number(blk.totalUnits) || ((Number(blk.floors) || 1) * (Number(blk.unitsPerFloor) || 2))), 0);
+        }
 
         await env.DB.prepare(`
           INSERT INTO projects (id, company_id, name, address, total_area, budget, stages, current_stage, status, number_of_units, default_unit_area, default_price_per_meter, blocks_json, supervisor_name, building_specs_json, unit_specs_json, extra_json)
@@ -1774,30 +1779,123 @@ export default {
           p.supervisorName || "مهندس میلاد فرخی",
           p.buildingSpecs ? JSON.stringify(p.buildingSpecs) : null,
           p.unitSpecs ? JSON.stringify(p.unitSpecs) : null,
-          JSON.stringify(p)
+          JSON.stringify({ ...p, numberOfUnits: requestedUnitsCount })
         ).run();
 
-        // Auto-generate units if requestedUnitsCount > 0
-        if (requestedUnitsCount > 0) {
-          const defArea = Number(p.defaultUnitArea || 0);
-          const defPrice = Number(p.defaultUnitPrice || p.defaultPricePerMeter || 0);
-          const { results: currentUnits } = await env.DB.prepare("SELECT id FROM units WHERE project_id = ? AND (is_deleted IS NULL OR is_deleted = 0)").bind(pId).all();
-          const startIdx = isNew ? 1 : ((currentUnits || []).length + 1);
-          const unitStmts = [];
+        // Auto-generate units based on automatic block structuring or requestedUnitsCount
+        const defArea = Number(p.defaultUnitArea || 0);
+        const defPrice = Number(p.defaultUnitPrice || p.defaultPricePerMeter || 0);
+        const { results: currentUnits } = await env.DB.prepare("SELECT id, block_name FROM units WHERE project_id = ? AND (is_deleted IS NULL OR is_deleted = 0)").bind(pId).all();
+        const activeList = currentUnits || [];
+        const unitStmts = [];
+
+        if (isNew && Array.isArray(p.generatedUnits) && p.generatedUnits.length > 0) {
+          p.generatedUnits.forEach((gu, idx) => {
+            const uId = "u_" + Date.now() + "_" + (idx + 1) + "_" + Math.floor(Math.random() * 1000);
+            unitStmts.push(
+              env.DB.prepare(`
+                INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
+                VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
+              `).bind(
+                uId,
+                pId,
+                String(gu.unitNumber || (idx + 1)),
+                String(gu.blockName || ""),
+                String(gu.floor ?? "1"),
+                defArea,
+                defArea,
+                defPrice,
+                defArea * defPrice
+              )
+            );
+          });
+        } else if (Array.isArray(p.blocks) && p.blocks.length > 0 && (isNew || p.syncBlockUnits)) {
+          const style = p.numberingStyle || "block_floor_unit_short";
+          let globalSeq = activeList.length;
+
+          p.blocks.forEach((blk) => {
+            const bName = String(blk.name || "").trim();
+            const floors = Math.max(0, Number(blk.floors ?? 4));
+            const unitsPerFloor = Math.max(1, Number(blk.unitsPerFloor ?? 4));
+            const groundUnits = Math.max(0, Number(blk.groundFloorUnits ?? 0));
+
+            let floorConfigs = [];
+            if (Array.isArray(blk.floorConfigs) && blk.floorConfigs.length > 0) {
+              floorConfigs = blk.floorConfigs.map((fc) => ({
+                floorNumber: Number(fc.floorNumber ?? 0),
+                unitsCount: Math.max(0, Number(fc.unitsCount ?? 0))
+              }));
+            } else {
+              if (groundUnits > 0) {
+                floorConfigs.push({ floorNumber: 0, unitsCount: groundUnits });
+              }
+              for (let f = 1; f <= floors; f++) {
+                floorConfigs.push({ floorNumber: f, unitsCount: unitsPerFloor });
+              }
+            }
+
+            const existingInBlock = activeList.filter(u => (u.block_name || "") === bName);
+            let seqInBlock = 0;
+
+            floorConfigs.forEach((fc) => {
+              for (let posInFloor = 1; posInFloor <= fc.unitsCount; posInFloor++) {
+                seqInBlock++;
+                if (!isNew && seqInBlock <= existingInBlock.length) {
+                  continue;
+                }
+                globalSeq++;
+                const floorNum = fc.floorNumber;
+                let unitNumber = `${bName}${floorNum}${posInFloor}`;
+                if (style === "block_floor_unit_short") {
+                  unitNumber = bName ? `${bName}${floorNum}${posInFloor}` : `${floorNum}${posInFloor}`;
+                } else if (style === "block_seq_padded") {
+                  const padded = String(seqInBlock).padStart(2, "0");
+                  unitNumber = bName ? `${bName}${padded}` : padded;
+                } else if (style === "block_unit") {
+                  const floorUnitCode = floorNum === 0 ? `0${posInFloor}` : String(floorNum * 100 + posInFloor);
+                  unitNumber = bName ? `${bName}-${floorUnitCode}` : floorUnitCode;
+                } else if (style === "floor_unit") {
+                  unitNumber = floorNum === 0 ? `0${posInFloor}` : String(floorNum * 100 + posInFloor);
+                } else if (style === "sequential") {
+                  unitNumber = bName && p.blocks.length > 1 ? `${bName}-${seqInBlock}` : String(globalSeq);
+                }
+                const uId = "u_" + Date.now() + "_" + globalSeq + "_" + Math.floor(Math.random() * 1000);
+                unitStmts.push(
+                  env.DB.prepare(`
+                    INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
+                    VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
+                  `).bind(uId, pId, unitNumber, bName, String(floorNum), defArea, defArea, defPrice, defArea * defPrice)
+                );
+              }
+            });
+          });
+        } else if (requestedUnitsCount > 0) {
+          const numBlocks = Math.max(1, Number(p.numberOfBlocks) || 1);
+          const blockLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
+          const startIdx = isNew ? 1 : (activeList.length + 1);
+          const unitsPerBlock = Math.ceil(requestedUnitsCount / numBlocks);
+
           for (let i = startIdx; i <= requestedUnitsCount; i++) {
-            const unitNumber = String(i);
-            const floor = String(Math.ceil(i / 2));
+            const blockIdx = numBlocks > 1 ? Math.min(numBlocks - 1, Math.floor((i - 1) / unitsPerBlock)) : 0;
+            const bName = numBlocks > 1 ? (blockLabels[blockIdx] || `بلوک ${blockIdx + 1}`) : "";
+            const idxInBlock = numBlocks > 1 ? ((i - 1) % unitsPerBlock) + 1 : i;
+            const floor = String(Math.ceil(idxInBlock / 2));
+            const posInFloor = ((idxInBlock - 1) % 2) + 1;
+            const unitNumber = p.numberingStyle === "floor_unit"
+              ? String(Number(floor) * 100 + posInFloor)
+              : String(i);
             const uId = "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100);
             unitStmts.push(
               env.DB.prepare(`
                 INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
-                VALUES (?, ?, ?, '', ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
-              `).bind(uId, pId, unitNumber, floor, defArea, defArea, defPrice, defArea * defPrice)
+                VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
+              `).bind(uId, pId, unitNumber, bName, floor, defArea, defArea, defPrice, defArea * defPrice)
             );
           }
-          if (unitStmts.length > 0) {
-            await env.DB.batch(unitStmts);
-          }
+        }
+
+        if (unitStmts.length > 0) {
+          await env.DB.batch(unitStmts);
         }
 
         return new Response(JSON.stringify({ status: "success", id: pId, project: { ...p, id: pId, numberOfUnits: requestedUnitsCount } }), { headers: corsHeaders });
