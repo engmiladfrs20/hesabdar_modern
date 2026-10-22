@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -3614,12 +3615,62 @@ app.post("/api/cloudflare/deploy", async (req, res) => {
     if (cfApiToken) cfApiToken = cfApiToken.trim();
     if (cfAccountId) cfAccountId = cfAccountId.trim();
     if (cfWorkerName) cfWorkerName = cfWorkerName.trim();
+    else cfWorkerName = "hesabdarpeymankar";
 
-    if (!cfApiToken || !cfAccountId || !cfWorkerName) {
-      return res.status(400).json({ error: "لطفا توکن کلودفلر، شناسه اکانت و نام ورکر را وارد نمایید" });
+    if (!cfApiToken) {
+      return res.status(400).json({ error: "لطفا توکن کلودفلر (CLOUDFLARE_API_TOKEN) را وارد نمایید" });
     }
 
-    // 1. Check or Create D1 Database
+    // Try full Wrangler deployment (builds Vite frontend + migrates D1 + deploys worker.js & dist/ static assets)
+    try {
+      const deployEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        CLOUDFLARE_API_TOKEN: cfApiToken,
+        ...(cfAccountId ? { CLOUDFLARE_ACCOUNT_ID: cfAccountId } : {})
+      };
+      try {
+        execSync("npx wrangler d1 execute hesabdar_peymankar --remote --file=schema.sql", {
+          cwd: process.cwd(),
+          env: deployEnv,
+          stdio: "pipe"
+        });
+      } catch {}
+
+      const deployOut = execSync("npx wrangler deploy", {
+        cwd: process.cwd(),
+        env: deployEnv,
+        encoding: "utf-8"
+      });
+
+      const urlMatch = deployOut.match(/https:\/\/[a-zA-Z0-9.-]+\.workers\.dev/);
+      const currentSettings = readSettings();
+      const resolvedUrl = urlMatch ? urlMatch[0] : (currentSettings.cfWorkerUrl || `https://${cfWorkerName}.vikoni4694.workers.dev`);
+      const syncToken = currentSettings.syncToken || ("st_" + Math.random().toString(36).substring(2));
+
+      writeSettings({
+        ...currentSettings,
+        cfApiToken,
+        cfAccountId: cfAccountId || currentSettings.cfAccountId || "",
+        cfWorkerName,
+        cfWorkerUrl: resolvedUrl,
+        syncToken
+      });
+
+      return res.json({
+        status: "success",
+        message: "نسخه جدید فرانت‌اند، دیتابیس D1 و ورکر کلودفلر با موفقیت منتشر و آپدیت شد!",
+        workerUrl: resolvedUrl,
+        syncToken
+      });
+    } catch (wranglerErr: any) {
+      if (!cfAccountId) {
+        return res.status(500).json({
+          error: "خطا در اجرای استقرار کلودفلر: " + (wranglerErr.stderr?.toString() || wranglerErr.message)
+        });
+      }
+    }
+
+    // Fallback to REST API upload if Account ID is provided
     let d1DatabaseId = "";
     const listD1Url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/d1/database`;
     const d1Response = await fetch(listD1Url, {

@@ -1,6 +1,9 @@
 node_modules/
 build/
-dist/
+dist/server.cjs
+dist/server.cjs.map
+dist/win-unpacked/
+release/
 coverage/
 .DS_Store
 *.log
