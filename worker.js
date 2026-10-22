@@ -372,8 +372,95 @@ function mergeExtraJson(camelObj, rawRow) {
   return camelObj;
 }
 
+// Safe in-memory D1-compatible fallback if env.DB is not bound in Cloudflare settings
+let _memoryTables = null;
+function getInMemoryD1Shim() {
+  if (!_memoryTables) {
+    _memoryTables = {
+      companies: [{ id: "c1", name: "شرکت راه و ساختمان مدرن سازان با تجربه", code: "33981" }],
+      projects: [],
+      accounts: [{ id: "a1", name: "بانک ملت - حساب جاری مرکزی", type: "bank", type_name: "بانک", balance: 0 }],
+      contacts: [],
+      imprest_funds: [],
+      imprest_expenses: [],
+      pre_sales: [],
+      pre_sale_installments: [],
+      alerts_log: [],
+      materials: [],
+      material_transactions: [],
+      transactions: [],
+      checks: [],
+      units: [],
+      users: [{ id: "u1", name: "مهندس میلاد فرخی", role: "manager", role_name: "مدیر ارشد پروژه", username: "admin", password: "Miladlar224" }],
+      settings: [],
+      timesheets: [],
+      payrolls: [],
+      backups: []
+    };
+  }
+  const makeStmt = (sql, boundArgs = []) => ({
+    bind: (...args) => makeStmt(sql, args),
+    all: async () => {
+      const m = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
+      const tbl = m ? m[1] : null;
+      return { results: tbl && _memoryTables[tbl] ? [..._memoryTables[tbl]] : [] };
+    },
+    first: async () => {
+      if (/COUNT\(\*\)/i.test(sql)) {
+        const m = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
+        const tbl = m ? m[1] : null;
+        return { count: tbl && _memoryTables[tbl] ? _memoryTables[tbl].length : 0 };
+      }
+      const m = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
+      const tbl = m ? m[1] : null;
+      const rows = tbl && _memoryTables[tbl] ? _memoryTables[tbl] : [];
+      if (boundArgs.length > 0 && /WHERE\s+id\s*=\s*\?/i.test(sql)) {
+        return rows.find(r => r.id === boundArgs[0]) || null;
+      }
+      return rows[0] || null;
+    },
+    run: async () => {
+      if (/^DELETE\s+FROM\s+([a-zA-Z0-9_]+)\s*$/i.test(sql.trim())) {
+        const m = sql.trim().match(/^DELETE\s+FROM\s+([a-zA-Z0-9_]+)\s*$/i);
+        if (m && _memoryTables[m[1]]) _memoryTables[m[1]] = [];
+      } else if (/DELETE\s+FROM\s+([a-zA-Z0-9_]+)\s+WHERE\s+id\s*=\s*\?/i.test(sql)) {
+        const m = sql.match(/DELETE\s+FROM\s+([a-zA-Z0-9_]+)/i);
+        if (m && _memoryTables[m[1]] && boundArgs[0]) {
+          _memoryTables[m[1]] = _memoryTables[m[1]].filter(r => r.id !== boundArgs[0]);
+        }
+      } else if (/INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+([a-zA-Z0-9_]+)\s*\(([^)]+)\)/i.test(sql)) {
+        const m = sql.match(/INSERT\s+(?:OR\s+REPLACE\s+)?INTO\s+([a-zA-Z0-9_]+)\s*\(([^)]+)\)/i);
+        if (m) {
+          const tbl = m[1];
+          const cols = m[2].split(",").map(c => c.trim());
+          if (!_memoryTables[tbl]) _memoryTables[tbl] = [];
+          const row = {};
+          cols.forEach((col, i) => { row[col] = boundArgs[i] !== undefined ? boundArgs[i] : null; });
+          const idx = row.id ? _memoryTables[tbl].findIndex(r => r.id === row.id) : -1;
+          if (idx >= 0) _memoryTables[tbl][idx] = { ..._memoryTables[tbl][idx], ...row };
+          else _memoryTables[tbl].push(row);
+        }
+      }
+      return { success: true };
+    }
+  });
+  return {
+    prepare: (sql) => makeStmt(sql),
+    batch: async (stmts) => {
+      const out = [];
+      for (const s of stmts || []) {
+        if (s && typeof s.run === "function") out.push(await s.run());
+      }
+      return out;
+    }
+  };
+}
+
 export default {
   async fetch(request, env, ctx) {
+    if (!env.DB) {
+      env.DB = getInMemoryD1Shim();
+    }
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;

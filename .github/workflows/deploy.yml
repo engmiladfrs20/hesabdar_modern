@@ -28,23 +28,8 @@ jobs:
           rm -f dist/server.cjs dist/server.cjs.map
           ls -la dist
 
-      - name: Apply D1 Schema & Deploy to Cloudflare Workers
+      - name: Auto-Discover D1 Database & Deploy to Cloudflare Workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "=================================================================="
-            echo "⚠️ توجه: متغیر CLOUDFLARE_API_TOKEN در بخش Secrets گیت‌هاب تنظیم نشده است."
-            echo "اگر مخزن گیت‌هاب خود را مستقیماً از داخل پنل Cloudflare (بخش Workers & Pages -> Settings -> Builds -> Git) متصل کرده‌اید، کلودفلر به صورت خودکار نسخه جدید را منتشر می‌کند."
-            echo "اگر می‌خواهید انتشار از طریق خود GitHub Actions انجام شود:"
-            echo "۱. در گیت‌هاب وارد Settings -> Secrets and variables -> Actions شوید."
-            echo "۲. روی New repository secret کلیک کنید."
-            echo "۳. نام را CLOUDFLARE_API_TOKEN بگذارید و توکن کلودفلر خود را وارد نمایید."
-            echo "=================================================================="
-            exit 0
-          fi
-          echo "Applying Cloudflare D1 Schema Migrations..."
-          npx wrangler d1 execute hesabdar_peymankar --remote --file=schema.sql || true
-          echo "Deploying Worker and Static Assets to Cloudflare..."
-          npx wrangler deploy
+        run: node scripts/cloudflare-deploy.mjs

@@ -3621,22 +3621,16 @@ app.post("/api/cloudflare/deploy", async (req, res) => {
       return res.status(400).json({ error: "لطفا توکن کلودفلر (CLOUDFLARE_API_TOKEN) را وارد نمایید" });
     }
 
-    // Try full Wrangler deployment (builds Vite frontend + migrates D1 + deploys worker.js & dist/ static assets)
+    // Try full Wrangler deployment via smart auto-discovery script (builds Vite frontend + resolves D1 UUID + migrates D1 + deploys worker.js & dist/ static assets)
     try {
       const deployEnv: NodeJS.ProcessEnv = {
         ...process.env,
         CLOUDFLARE_API_TOKEN: cfApiToken,
+        CF_WORKER_NAME: cfWorkerName,
         ...(cfAccountId ? { CLOUDFLARE_ACCOUNT_ID: cfAccountId } : {})
       };
-      try {
-        execSync("npx wrangler d1 execute hesabdar_peymankar --remote --file=schema.sql", {
-          cwd: process.cwd(),
-          env: deployEnv,
-          stdio: "pipe"
-        });
-      } catch {}
 
-      const deployOut = execSync("npx wrangler deploy", {
+      const deployOut = execSync("node scripts/cloudflare-deploy.mjs", {
         cwd: process.cwd(),
         env: deployEnv,
         encoding: "utf-8"
