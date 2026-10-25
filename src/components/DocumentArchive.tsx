@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import { printStructuredReport } from "../utils/printReport";
 
 interface DocumentArchiveProps {
   db: DatabaseSchema;
@@ -36,6 +37,11 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedProject, setSelectedProject] = useState("all");
   const [selectedType, setSelectedType] = useState("all"); // 'all', 'factor', 'receipt', 'imprest', 'standalone'
+  const [showAdvSearch, setShowAdvSearch] = useState(false);
+  const [advStartDate, setAdvStartDate] = useState("");
+  const [advEndDate, setAdvEndDate] = useState("");
+  const [advMinAmount, setAdvMinAmount] = useState("");
+  const [advMaxAmount, setAdvMaxAmount] = useState("");
   
   // Standalone upload state
   const [showUploadForm, setShowUploadForm] = useState(false);
@@ -363,7 +369,7 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
 
   // Filter and search
   const filteredDocs = documents.filter((doc) => {
-    const matchesSearch = 
+    const matchesSearch = !searchTerm ||
       doc.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (doc.person && doc.person.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (doc.category && doc.category.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -371,9 +377,43 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
 
     const matchesProject = selectedProject === "all" || doc.projectId === selectedProject;
     const matchesType = selectedType === "all" || doc.docType === selectedType;
+    if (!matchesSearch || !matchesProject || !matchesType) return false;
+    if (advStartDate && doc.date < advStartDate) return false;
+    if (advEndDate && doc.date > advEndDate) return false;
+    if (advMinAmount && (doc.amount || 0) < Number(advMinAmount)) return false;
+    if (advMaxAmount && (doc.amount || 0) > Number(advMaxAmount)) return false;
 
-    return matchesSearch && matchesProject && matchesType;
+    return true;
   });
+
+  const handlePrintArchive = (mode: "before_filter" | "after_filter") => {
+    const sourceList = mode === "before_filter" ? documents : filteredDocs;
+    printStructuredReport({
+      title: "گزارش فهرست اسناد و مدارک بایگانی الکترونیک",
+      subtitle: mode === "before_filter" ? "چاپ کامل کلیه اسناد بایگانی (قبل از اعمال فیلتر)" : "چاپ اسناد بایگانی انتخابی (بعد از اعمال فیلتر)",
+      filterSummary: mode === "after_filter" ? [
+        searchTerm ? `جستجو: ${searchTerm}` : "",
+        selectedProject !== "all" ? `پروژه: ${projects.find(p => p.id === selectedProject)?.name || ""}` : "",
+        selectedType !== "all" ? `نوع سند: ${selectedType}` : "",
+        advStartDate ? `از تاریخ: ${advStartDate}` : "",
+        advEndDate ? `تا تاریخ: ${advEndDate}` : ""
+      ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده" : undefined,
+      columns: [
+        { header: "ردیف", accessor: (_, i) => String(i + 1) },
+        { header: "تاریخ سند", accessor: (d) => d.date || "—" },
+        { header: "عنوان سند", accessor: (d) => d.title },
+        { header: "نوع پیوست", accessor: (d) => d.docType === "factor" ? "فاکتور خرید" : d.docType === "receipt" ? "فیش واریزی" : "سند تنخواه" },
+        { header: "طرف حساب", accessor: (d) => d.person || "—" },
+        { header: "پروژه", accessor: (d) => projects.find(p => p.id === d.projectId)?.name || "عمومی" },
+        { header: "مبلغ (ریال)", accessor: (d) => d.amount ? `${Number(d.amount).toLocaleString("fa-IR")} ریال` : "—" }
+      ],
+      data: sourceList,
+      summaryItems: [
+        { label: "تعداد کل اسناد", value: `${sourceList.length} سند` },
+        { label: "جمع مبالغ اسناد", value: `${sourceList.reduce((s, d) => s + (Number(d.amount) || 0), 0).toLocaleString("fa-IR")} ریال` }
+      ]
+    });
+  };
 
   // Calculate stats
   const totalBase64Size = documents.reduce((sum, doc) => sum + (doc.fileData?.length || 0), 0);
@@ -474,7 +514,7 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
 
       {/* Filter and Search Panel */}
       <div className="bg-white p-5 rounded-2xl border border-slate-150 shadow-2xs space-y-4">
-        <div className="flex flex-col md:flex-row gap-3">
+        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
           
           {/* Search Box */}
           <div className="flex-1 relative">
@@ -489,7 +529,7 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
           </div>
 
           {/* Project Filter */}
-          <div className="w-full md:w-52">
+          <div className="w-full md:w-44">
             <select
               value={selectedProject}
               onChange={(e) => setSelectedProject(e.target.value)}
@@ -503,7 +543,7 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
           </div>
 
           {/* Document Type Filter */}
-          <div className="w-full md:w-48">
+          <div className="w-full md:w-44">
             <select
               value={selectedType}
               onChange={(e) => setSelectedType(e.target.value)}
@@ -516,7 +556,72 @@ export default function DocumentArchive({ db, getApiUrl, onRefresh, projects }: 
             </select>
           </div>
 
+          <button
+            type="button"
+            onClick={() => setShowAdvSearch(!showAdvSearch)}
+            className={`px-3 py-2.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${showAdvSearch ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-slate-50 border-slate-200 text-slate-600"}`}
+          >
+            <Filter className="w-4 h-4" />
+            جستجوی پیشرفته
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePrintArchive("before_filter")}
+            className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            چاپ (قبل از فیلتر)
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePrintArchive("after_filter")}
+            className="px-3 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            چاپ (بعد از فیلتر)
+          </button>
+
         </div>
+
+        {showAdvSearch && (
+          <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs bg-slate-50/70 p-3 rounded-xl">
+            <div>
+              <label className="block text-[10px] text-slate-500 font-bold mb-1">از تاریخ</label>
+              <ShamsiDatePicker value={advStartDate} onChange={setAdvStartDate} placeholder="۱۴۰۳/۰۱/۰۱" className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 font-bold mb-1">تا تاریخ</label>
+              <ShamsiDatePicker value={advEndDate} onChange={setAdvEndDate} placeholder="۱۴۰۳/۱۲/۲۹" className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 font-bold mb-1">حداقل مبلغ (ریال)</label>
+              <FormattedAmountInput value={advMinAmount} onChange={setAdvMinAmount} placeholder="از مبلغ..." className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+            </div>
+            <div className="flex items-end gap-1.5">
+              <div className="flex-1">
+                <label className="block text-[10px] text-slate-500 font-bold mb-1">حداکثر مبلغ (ریال)</label>
+                <FormattedAmountInput value={advMaxAmount} onChange={setAdvMaxAmount} placeholder="تا مبلغ..." className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchTerm("");
+                  setSelectedProject("all");
+                  setSelectedType("all");
+                  setAdvStartDate("");
+                  setAdvEndDate("");
+                  setAdvMinAmount("");
+                  setAdvMaxAmount("");
+                }}
+                className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg font-bold text-[10px] cursor-pointer"
+              >
+                پاکسازی
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Grid of Documents */}

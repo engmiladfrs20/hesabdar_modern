@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { DatabaseSchema, Project, Contact, Account, TimesheetItem, PayrollItem } from "../types";
-import { Plus, Users, Calendar, Coins, CheckCircle, RefreshCw, Briefcase, FileText, Landmark, Clock, Trash } from "lucide-react";
+import { Plus, Users, Calendar, Coins, CheckCircle, RefreshCw, Briefcase, FileText, Landmark, Clock, Trash, Search, Filter, Printer } from "lucide-react";
 import { motion } from "motion/react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
 import { getTodayShamsiString } from "../utils/shamsi";
 import { toEnglishDigits } from "../utils/digits";
+import { printStructuredReport } from "../utils/printReport";
 
 interface PayrollTimesheetsProps {
   db: DatabaseSchema;
@@ -18,6 +19,14 @@ interface PayrollTimesheetsProps {
 export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRefresh, projects }: PayrollTimesheetsProps) {
   const [subTab, setSubTab] = useState<"timesheet" | "payroll">("timesheet");
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // Search & Advanced Filter states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showAdvSearch, setShowAdvSearch] = useState(false);
+  const [advProjectId, setAdvProjectId] = useState("all");
+  const [advContactId, setAdvContactId] = useState("all");
+  const [advStartDate, setAdvStartDate] = useState("");
+  const [advEndDate, setAdvEndDate] = useState("");
 
   // Filter contacts to subcontractors/workers or other active parties
   const workers = db.contacts.filter(c => c.role === "subcontractor" || c.role === "imprest_holder" || c.role === "admin" || c.role === "supplier");
@@ -464,10 +473,221 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
         </div>
 
         {/* LEFT COLUMN: Data Table / Log Details */}
-        <div className="lg:col-span-2">
-          
+        <div className="lg:col-span-2 space-y-4">
+          {/* Universal Search & Print Toolbar */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-150 shadow-2xs space-y-3">
+            <div className="flex flex-wrap justify-between items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 flex-1">
+                <div className="relative flex items-center flex-1 sm:flex-initial">
+                  <input
+                    type="text"
+                    placeholder="جستجو در نام پیمانکار/کارگر، پروژه، شرح..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="w-full sm:w-56 px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-indigo-500"
+                  />
+                  <Search className="w-4 h-4 text-slate-400 absolute right-2.5" />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAdvSearch(!showAdvSearch)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${showAdvSearch ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-slate-50 border-slate-200 text-slate-600"}`}
+                >
+                  <Filter className="w-3.5 h-3.5" />
+                  جستجوی پیشرفته
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (subTab === "timesheet") {
+                      printStructuredReport({
+                        title: "گزارش جامع کارکرد روزانه کارگران و استادکاران (تایم‌شیت)",
+                        subtitle: "چاپ کامل کلیه رکوردهای کارکرد (قبل از اعمال فیلتر)",
+                        columns: [
+                          { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+                          { header: "تاریخ", accessor: (t) => toFarsiDigits(t.date) },
+                          { header: "پروژه", accessor: (t) => projects.find(p => p.id === t.projectId)?.name || "عمومی" },
+                          { header: "نیرو / استادکار", accessor: (t) => workers.find(w => w.id === t.contactId)?.name || "نیروی روزمزد" },
+                          { header: "میزان کارکرد", accessor: (t) => `${toFarsiDigits(t.hoursWorked)} روز/ساعت` },
+                          { header: "نرخ واحد (ریال)", accessor: (t) => formatTomans(t.dailyRate) },
+                          { header: "مجموع (ریال)", accessor: (t) => formatTomans(t.totalAmount) },
+                          { header: "توضیحات", accessor: (t) => t.description || "—" }
+                        ],
+                        data: timesheets,
+                        summaryItems: [
+                          { label: "تعداد کل رکوردها", value: `${toFarsiDigits(timesheets.length)} فقره` },
+                          { label: "جمع کل مبالغ کارکرد", value: formatTomans(timesheets.reduce((s, t) => s + t.totalAmount, 0)) }
+                        ]
+                      });
+                    } else {
+                      printStructuredReport({
+                        title: "گزارش جامع پرداخت‌های حقوق و دستمزد کارگاهی",
+                        subtitle: "چاپ کامل کلیه اسناد پرداختی دستمزد (قبل از اعمال فیلتر)",
+                        columns: [
+                          { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+                          { header: "تاریخ پرداخت", accessor: (p) => toFarsiDigits(p.paymentDate) },
+                          { header: "پروژه", accessor: (p) => projects.find(pr => pr.id === p.projectId)?.name || "عمومی" },
+                          { header: "دریافت‌کننده", accessor: (p) => workers.find(w => w.id === p.contactId)?.name || "پیمانکار جزء" },
+                          { header: "حساب مبدأ", accessor: (p) => db.accounts.find(a => a.id === p.accountId)?.name || "صندوق" },
+                          { header: "مبلغ پرداختی (ریال)", accessor: (p) => formatTomans(p.amount) },
+                          { header: "توضیحات", accessor: (p) => p.description || "—" }
+                        ],
+                        data: payrolls,
+                        summaryItems: [
+                          { label: "تعداد کل اسناد پرداخت", value: `${toFarsiDigits(payrolls.length)} سند` },
+                          { label: "جمع کل دستمزد پرداختی", value: formatTomans(payrolls.reduce((s, p) => s + p.amount, 0)) }
+                        ]
+                      });
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ (قبل از فیلتر)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const filteredTs = timesheets.filter(t => {
+                      const proj = projects.find(p => p.id === t.projectId);
+                      const contact = workers.find(c => c.id === t.contactId);
+                      const q = searchQuery.toLowerCase();
+                      const matchQ = !q ||
+                        (proj && proj.name.toLowerCase().includes(q)) ||
+                        (contact && contact.name.toLowerCase().includes(q)) ||
+                        (t.description && t.description.toLowerCase().includes(q));
+                      if (!matchQ) return false;
+                      if (advProjectId !== "all" && t.projectId !== advProjectId) return false;
+                      if (advContactId !== "all" && t.contactId !== advContactId) return false;
+                      if (advStartDate && t.date < advStartDate) return false;
+                      if (advEndDate && t.date > advEndDate) return false;
+                      return true;
+                    });
+                    const filteredPr = payrolls.filter(p => {
+                      const proj = projects.find(pr => pr.id === p.projectId);
+                      const contact = workers.find(c => c.id === p.contactId);
+                      const q = searchQuery.toLowerCase();
+                      const matchQ = !q ||
+                        (proj && proj.name.toLowerCase().includes(q)) ||
+                        (contact && contact.name.toLowerCase().includes(q)) ||
+                        (p.description && p.description.toLowerCase().includes(q));
+                      if (!matchQ) return false;
+                      if (advProjectId !== "all" && p.projectId !== advProjectId) return false;
+                      if (advContactId !== "all" && p.contactId !== advContactId) return false;
+                      if (advStartDate && p.paymentDate < advStartDate) return false;
+                      if (advEndDate && p.paymentDate > advEndDate) return false;
+                      return true;
+                    });
+
+                    if (subTab === "timesheet") {
+                      printStructuredReport({
+                        title: "گزارش کارکرد روزانه کارگران و استادکاران (تایم‌شیت)",
+                        subtitle: "چاپ رکوردهای فیلتر شده (بعد از اعمال فیلتر)",
+                        filterSummary: [
+                          searchQuery ? `جستجو: ${searchQuery}` : "",
+                          advStartDate ? `از تاریخ: ${advStartDate}` : "",
+                          advEndDate ? `تا تاریخ: ${advEndDate}` : ""
+                        ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده",
+                        columns: [
+                          { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+                          { header: "تاریخ", accessor: (t) => toFarsiDigits(t.date) },
+                          { header: "پروژه", accessor: (t) => projects.find(p => p.id === t.projectId)?.name || "عمومی" },
+                          { header: "نیرو / استادکار", accessor: (t) => workers.find(w => w.id === t.contactId)?.name || "نیروی روزمزد" },
+                          { header: "میزان کارکرد", accessor: (t) => `${toFarsiDigits(t.hoursWorked)} روز/ساعت` },
+                          { header: "نرخ واحد (ریال)", accessor: (t) => formatTomans(t.dailyRate) },
+                          { header: "مجموع (ریال)", accessor: (t) => formatTomans(t.totalAmount) },
+                          { header: "توضیحات", accessor: (t) => t.description || "—" }
+                        ],
+                        data: filteredTs,
+                        summaryItems: [
+                          { label: "تعداد رکوردهای فیلتر شده", value: `${toFarsiDigits(filteredTs.length)} فقره` },
+                          { label: "جمع کل مبالغ کارکرد", value: formatTomans(filteredTs.reduce((s, t) => s + t.totalAmount, 0)) }
+                        ]
+                      });
+                    } else {
+                      printStructuredReport({
+                        title: "گزارش پرداخت‌های حقوق و دستمزد کارگاهی",
+                        subtitle: "چاپ اسناد فیلتر شده (بعد از اعمال فیلتر)",
+                        filterSummary: [
+                          searchQuery ? `جستجو: ${searchQuery}` : "",
+                          advStartDate ? `از تاریخ: ${advStartDate}` : "",
+                          advEndDate ? `تا تاریخ: ${advEndDate}` : ""
+                        ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده",
+                        columns: [
+                          { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+                          { header: "تاریخ پرداخت", accessor: (p) => toFarsiDigits(p.paymentDate) },
+                          { header: "پروژه", accessor: (p) => projects.find(pr => pr.id === p.projectId)?.name || "عمومی" },
+                          { header: "دریافت‌کننده", accessor: (p) => workers.find(w => w.id === p.contactId)?.name || "پیمانکار جزء" },
+                          { header: "حساب مبدأ", accessor: (p) => db.accounts.find(a => a.id === p.accountId)?.name || "صندوق" },
+                          { header: "مبلغ پرداختی (ریال)", accessor: (p) => formatTomans(p.amount) },
+                          { header: "توضیحات", accessor: (p) => p.description || "—" }
+                        ],
+                        data: filteredPr,
+                        summaryItems: [
+                          { label: "تعداد اسناد فیلتر شده", value: `${toFarsiDigits(filteredPr.length)} سند` },
+                          { label: "جمع کل دستمزد پرداختی", value: formatTomans(filteredPr.reduce((s, p) => s + p.amount, 0)) }
+                        ]
+                      });
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ (بعد از فیلتر)
+                </button>
+              </div>
+            </div>
+
+            {showAdvSearch && (
+              <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs bg-slate-50/70 p-3 rounded-xl">
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">پروژه</label>
+                  <select value={advProjectId} onChange={e => setAdvProjectId(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                    <option value="all">همه پروژه‌ها</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">پیمانکار / نیرو</label>
+                  <select value={advContactId} onChange={e => setAdvContactId(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                    <option value="all">همه اشخاص</option>
+                    {workers.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">از تاریخ</label>
+                  <ShamsiDatePicker value={advStartDate} onChange={setAdvStartDate} placeholder="۱۴۰۳/۰۱/۰۱" className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+                </div>
+                <div className="flex items-end gap-1.5">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-slate-500 font-bold mb-1">تا تاریخ</label>
+                    <ShamsiDatePicker value={advEndDate} onChange={setAdvEndDate} placeholder="۱۴۰۳/۱۲/۲۹" className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setAdvProjectId("all");
+                      setAdvContactId("all");
+                      setAdvStartDate("");
+                      setAdvEndDate("");
+                    }}
+                    className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg font-bold text-[10px] cursor-pointer"
+                  >
+                    پاکسازی
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {subTab === "timesheet" ? (
-            <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4 h-full">
+            <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4">
               <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                 <h3 className="font-bold text-slate-800 text-xs sm:text-sm">ریز سوابق کارکرد روزانه (تایم‌شیت کارگران)</h3>
                 <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">
@@ -489,14 +709,42 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
                     </tr>
                   </thead>
                   <tbody>
-                    {timesheets.length === 0 ? (
+                    {timesheets.filter(t => {
+                      const proj = projects.find(p => p.id === t.projectId);
+                      const contact = workers.find(c => c.id === t.contactId);
+                      const q = searchQuery.toLowerCase();
+                      const matchQ = !q ||
+                        (proj && proj.name.toLowerCase().includes(q)) ||
+                        (contact && contact.name.toLowerCase().includes(q)) ||
+                        (t.description && t.description.toLowerCase().includes(q));
+                      if (!matchQ) return false;
+                      if (advProjectId !== "all" && t.projectId !== advProjectId) return false;
+                      if (advContactId !== "all" && t.contactId !== advContactId) return false;
+                      if (advStartDate && t.date < advStartDate) return false;
+                      if (advEndDate && t.date > advEndDate) return false;
+                      return true;
+                    }).length === 0 ? (
                       <tr>
                         <td colSpan={7} className="text-center py-8 text-slate-400 font-light">
-                          هیچ تایم‌شیت کارکردی ثبت نشده است
+                          هیچ تایم‌شیت کارکردی مطابق با فیلتر ثبت نشده است
                         </td>
                       </tr>
                     ) : (
-                      timesheets.map(t => {
+                      timesheets.filter(t => {
+                        const proj = projects.find(p => p.id === t.projectId);
+                        const contact = workers.find(c => c.id === t.contactId);
+                        const q = searchQuery.toLowerCase();
+                        const matchQ = !q ||
+                          (proj && proj.name.toLowerCase().includes(q)) ||
+                          (contact && contact.name.toLowerCase().includes(q)) ||
+                          (t.description && t.description.toLowerCase().includes(q));
+                        if (!matchQ) return false;
+                        if (advProjectId !== "all" && t.projectId !== advProjectId) return false;
+                        if (advContactId !== "all" && t.contactId !== advContactId) return false;
+                        if (advStartDate && t.date < advStartDate) return false;
+                        if (advEndDate && t.date > advEndDate) return false;
+                        return true;
+                      }).map(t => {
                         const proj = projects.find(p => p.id === t.projectId);
                         const contact = workers.find(c => c.id === t.contactId);
                         return (
@@ -532,7 +780,7 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
               </div>
             </div>
           ) : (
-            <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4 h-full">
+            <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4">
               <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                 <h3 className="font-bold text-slate-800 text-xs sm:text-sm">سوابق پرداخت‌های دستمزد و حقوق</h3>
                 <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">
@@ -553,14 +801,42 @@ export default function PayrollTimesheets({ db, activeCompanyId, getApiUrl, onRe
                     </tr>
                   </thead>
                   <tbody>
-                    {payrolls.length === 0 ? (
+                    {payrolls.filter(p => {
+                      const proj = projects.find(pr => pr.id === p.projectId);
+                      const contact = workers.find(c => c.id === p.contactId);
+                      const q = searchQuery.toLowerCase();
+                      const matchQ = !q ||
+                        (proj && proj.name.toLowerCase().includes(q)) ||
+                        (contact && contact.name.toLowerCase().includes(q)) ||
+                        (p.description && p.description.toLowerCase().includes(q));
+                      if (!matchQ) return false;
+                      if (advProjectId !== "all" && p.projectId !== advProjectId) return false;
+                      if (advContactId !== "all" && p.contactId !== advContactId) return false;
+                      if (advStartDate && p.paymentDate < advStartDate) return false;
+                      if (advEndDate && p.paymentDate > advEndDate) return false;
+                      return true;
+                    }).length === 0 ? (
                       <tr>
                         <td colSpan={6} className="text-center py-8 text-slate-400 font-light">
-                          هیچ سند پرداخت حقوقی ثبت نشده است
+                          هیچ سند پرداخت حقوقی مطابق با فیلتر ثبت نشده است
                         </td>
                       </tr>
                     ) : (
-                      payrolls.map(p => {
+                      payrolls.filter(p => {
+                        const proj = projects.find(pr => pr.id === p.projectId);
+                        const contact = workers.find(c => c.id === p.contactId);
+                        const q = searchQuery.toLowerCase();
+                        const matchQ = !q ||
+                          (proj && proj.name.toLowerCase().includes(q)) ||
+                          (contact && contact.name.toLowerCase().includes(q)) ||
+                          (p.description && p.description.toLowerCase().includes(q));
+                        if (!matchQ) return false;
+                        if (advProjectId !== "all" && p.projectId !== advProjectId) return false;
+                        if (advContactId !== "all" && p.contactId !== advContactId) return false;
+                        if (advStartDate && p.paymentDate < advStartDate) return false;
+                        if (advEndDate && p.paymentDate > advEndDate) return false;
+                        return true;
+                      }).map(p => {
                         const proj = projects.find(pr => pr.id === p.projectId);
                         const contact = workers.find(c => c.id === p.contactId);
                         const acc = db.accounts.find(a => a.id === p.accountId);

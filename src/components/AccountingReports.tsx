@@ -25,6 +25,7 @@ import { motion } from "motion/react";
 import SearchableCombobox from "./SearchableCombobox";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import { printStructuredReport } from "../utils/printReport";
 
 interface AccountingReportsProps {
   db: DatabaseSchema;
@@ -387,6 +388,88 @@ export default function AccountingReports({ db, projects, onAddContact, onAddPro
   const netPAndL = totalIncome - totalSpent;
   const estimatedFinalProfit = (totalIncome + valuationUnsold) - totalSpent;
 
+  const handlePrintActiveReport = (mode: "before_filter" | "after_filter") => {
+    const sourceTxs = mode === "before_filter" ? db.transactions.filter(t => !t.isDeleted) : filteredTransactions.filter(t => !t.isDeleted);
+    const filterSummary = mode === "after_filter" ? [
+      reportSearchQuery ? `جستجو: ${reportSearchQuery}` : "",
+      filterStartDate ? `از تاریخ: ${filterStartDate}` : "",
+      filterEndDate ? `تا تاریخ: ${filterEndDate}` : "",
+      filterMaterial !== "all" ? `مصالح: ${filterMaterial}` : "",
+      filterStage !== "all" ? `مرحله: ${filterStage}` : ""
+    ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده" : undefined;
+
+    if (activeReport === "journal") {
+      const entries = sourceTxs.map(tx => {
+        let debitAccount = "هزینه پروژه " + (projects.find(p => p.id === tx.projectId)?.name || "عمومی");
+        let creditAccount = db.accounts.find(a => a.id === tx.accountId)?.name || "صندوق";
+        if (tx.type === "income") {
+          debitAccount = db.accounts.find(a => a.id === tx.accountId)?.name || "صندوق";
+          creditAccount = tx.category === "پیش‌فروش" ? "پیش‌دریافت از پیش‌خریداران" : "سایر درآمدهای ساختمانی";
+        }
+        return { ...tx, debitAccount, creditAccount };
+      });
+      printStructuredReport({
+        title: "دفتر روزنامه کل دوطرفه",
+        subtitle: mode === "before_filter" ? "چاپ کامل دفتر روزنامه (قبل از اعمال فیلتر)" : "چاپ دفتر روزنامه (بعد از اعمال فیلتر)",
+        filterSummary,
+        columns: [
+          { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+          { header: "تاریخ", accessor: (r) => toFarsiDigits(r.date) },
+          { header: "شرح سند", accessor: (r) => r.description },
+          { header: "ذی‌نفع / طرف‌حساب", accessor: (r) => r.personName },
+          { header: "حساب بدهکار", accessor: (r) => r.debitAccount },
+          { header: "حساب بستانکار", accessor: (r) => r.creditAccount },
+          { header: "مبلغ (ریال)", accessor: (r) => formatTomans(r.amount) }
+        ],
+        data: entries,
+        summaryItems: [
+          { label: "تعداد کل اسناد", value: `${toFarsiDigits(entries.length)} سند` },
+          { label: "جمع کل گردش روزنامه", value: formatTomans(entries.reduce((s, r) => s + r.amount, 0)) }
+        ]
+      });
+    } else if (activeReport === "trial_balance") {
+      printStructuredReport({
+        title: "تراز آزمایشی کل حساب‌های کارگاهی",
+        subtitle: mode === "before_filter" ? "تراز آزمایشی کل (قبل از اعمال فیلتر)" : "تراز آزمایشی (بعد از اعمال فیلتر)",
+        filterSummary,
+        columns: [
+          { header: "کد حساب", accessor: (a) => toFarsiDigits(a.code || "10100" + a.id) },
+          { header: "عنوان حساب", accessor: (a) => a.name },
+          { header: "ماهیت", accessor: (a) => a.nature === "debtor" ? "بدهکار" : "بستانکار" },
+          { header: "گردش بدهکار (ریال)", accessor: (a) => formatTomans(a.debits) },
+          { header: "گردش بستانکار (ریال)", accessor: (a) => formatTomans(a.credits) },
+          { header: "مانده نهایی (ریال)", accessor: (a) => formatTomans(Math.abs(a.finalBalance)) }
+        ],
+        data: trialBalanceAccounts,
+        summaryItems: [
+          { label: "جمع کل گردش بدهکار", value: formatTomans(totalTrialDebits) },
+          { label: "جمع کل گردش بستانکار", value: formatTomans(totalTrialCredits) }
+        ]
+      });
+    } else if (activeReport === "ledger") {
+      printStructuredReport({
+        title: `صورتحساب معین شخص: ${activeContact?.name || "—"}`,
+        subtitle: mode === "before_filter" ? "چاپ کامل معین شخص (قبل از اعمال فیلتر)" : "چاپ معین شخص (بعد از اعمال فیلتر)",
+        filterSummary,
+        columns: [
+          { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+          { header: "تاریخ", accessor: (r) => toFarsiDigits(r.date) },
+          { header: "شرح سند", accessor: (r) => r.description },
+          { header: "بدهکار (ریال)", accessor: (r) => r.debit > 0 ? formatTomans(r.debit) : "—" },
+          { header: "بستانکار (ریال)", accessor: (r) => r.credit > 0 ? formatTomans(r.credit) : "—" },
+          { header: "مانده لحظه‌ای (ریال)", accessor: (r) => formatTomans(Math.abs(r.balanceAfter)) }
+        ],
+        data: ledgerRows,
+        summaryItems: [
+          { label: "طرف‌حساب", value: activeContact?.name || "—" },
+          { label: "مانده نهایی حساب", value: activeContact ? `${formatTomans(Math.abs(activeContact.balance))} (${activeContact.balance > 0 ? "بدهکار" : activeContact.balance < 0 ? "بستانکار" : "تسویه"})` : "—" }
+        ]
+      });
+    } else {
+      window.print();
+    }
+  };
+
   return (
     <div className="space-y-6 text-right" dir="rtl">
       
@@ -402,14 +485,23 @@ export default function AccountingReports({ db, projects, onAddContact, onAddPro
           </div>
         </div>
 
-        {/* Print Report Trigger */}
-        <button 
-          onClick={() => window.print()}
-          className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
-        >
-          <Printer className="w-4 h-4" />
-          چاپ و خروجی PDF گزارش
-        </button>
+        {/* Print Report Triggers (Before & After Filter) */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button 
+            onClick={() => handlePrintActiveReport("before_filter")}
+            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+          >
+            <Printer className="w-4 h-4" />
+            چاپ گزارش (قبل از فیلتر)
+          </button>
+          <button 
+            onClick={() => handlePrintActiveReport("after_filter")}
+            className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+          >
+            <Printer className="w-4 h-4" />
+            چاپ گزارش (بعد از فیلتر)
+          </button>
+        </div>
       </div>
 
       {/* Grid of Report Selector tabs */}

@@ -25,6 +25,25 @@ export interface ProjectBlockConfig {
   totalUnits: number;
 }
 
+export interface ProjectStageSubItem {
+  id: string;
+  name: string;
+  code?: string;
+  weight?: number;
+  status?: "pending" | "in_progress" | "completed";
+  progress?: number;
+  description?: string;
+}
+
+export interface ProjectStageBranch {
+  id: string;
+  name: string;
+  iconName?: string;
+  status?: "pending" | "in_progress" | "completed";
+  progress?: number;
+  subStages: ProjectStageSubItem[];
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -33,6 +52,7 @@ export interface Project {
   totalArea: number;
   budget: number;
   stages: string[];
+  stageTree?: ProjectStageBranch[];
   currentStage: string;
   status: "active" | "completed" | "paused";
   supervisorName?: string;
@@ -111,6 +131,7 @@ export interface TransactionPayment {
   invoiceDescription?: string;
   settlementMethod?: string;
   paymentStatus?: string;
+  sourceAccount?: string;
   destinationAccount?: string;
   receiptFileName?: string;
   receiptFileData?: string;
@@ -126,6 +147,8 @@ export interface Transaction {
   subCategory?: string;
   amount: number;
   accountId: string;
+  sourceAccount?: string;
+  destinationAccount?: string;
   personName: string;
   date: string;
   description: string;
@@ -144,6 +167,7 @@ export interface Transaction {
   paymentStatus?: "paid" | "partially_paid" | "unpaid";
   payments?: TransactionPayment[];
   preSaleId?: string;
+  installmentId?: string;
   contactId?: string;
   isDeleted?: boolean;
   approvalStatus?: "pending" | "approved" | "rejected";

@@ -4,6 +4,7 @@ import {
   ProjectBlockConfig,
   FloorUnitConfig,
   UnitNumberingStyle,
+  ProjectStageBranch,
   Transaction,
   UnitItem,
   Contact,
@@ -12,6 +13,13 @@ import {
 import { formatRials, toFarsiDigits } from "../utils/shamsi";
 import { toEnglishDigits } from "../utils/digits";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import {
+  DEFAULT_PROJECT_STAGE_TREE,
+  getProjectEffectiveStageTree,
+  saveGlobalStageTree,
+  flattenStageTreeToStrings
+} from "../data/constructionStages";
+import { printStructuredReport } from "../utils/printReport";
 import {
   Building,
   MapPin,
@@ -29,7 +37,14 @@ import {
   FileText,
   X,
   Grid,
-  Copy
+  Copy,
+  Search,
+  Filter,
+  Printer,
+  ChevronDown,
+  ChevronLeft,
+  FolderTree,
+  RotateCcw
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -255,7 +270,28 @@ export function ProjectsManager({
   const [editProjNumUnits, setEditProjNumUnits] = useState("");
   const [editNumberingStyle, setEditNumberingStyle] = useState<UnitNumberingStyle>("block_floor_unit_short");
   const [editBlocksConfig, setEditBlocksConfig] = useState<ProjectBlockConfig[]>([]);
-  const [syncBlocksOnSave, setSyncBlocksOnSave] = useState<boolean>(false);
+  const [syncBlocksOnSave, setSyncBlocksOnSave] = useState<boolean>(true);
+
+  // Hierarchical Project Stage Tree States (Requirement 7)
+  const [stageTree, setStageTree] = useState<ProjectStageBranch[]>(DEFAULT_PROJECT_STAGE_TREE);
+  const [expandedStageBranches, setExpandedStageBranches] = useState<Record<string, boolean>>({ stage_1: true, stage_2: true });
+  const [isStageManagerOpen, setIsStageManagerOpen] = useState<boolean>(false);
+  const [newBranchName, setNewBranchName] = useState<string>("");
+  const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
+  const [editingBranchTitle, setEditingBranchTitle] = useState<string>("");
+  const [newSubStageInputs, setNewSubStageInputs] = useState<Record<string, string>>({});
+  const [editingSubStageId, setEditingSubStageId] = useState<string | null>(null);
+  const [editingSubStageTitle, setEditingSubStageTitle] = useState<string>("");
+
+  // Search & Advanced Filter States for Units & Projects (Requirement 2)
+  const [unitSearchQuery, setUnitSearchQuery] = useState<string>("");
+  const [showAdvancedUnitSearch, setShowAdvancedUnitSearch] = useState<boolean>(false);
+  const [unitStatusFilter, setUnitStatusFilter] = useState<string>("ALL");
+  const [unitFloorFilter, setUnitFloorFilter] = useState<string>("ALL");
+  const [unitMinArea, setUnitMinArea] = useState<string>("");
+  const [unitMaxArea, setUnitMaxArea] = useState<string>("");
+  const [unitMinPrice, setUnitMinPrice] = useState<string>("");
+  const [unitMaxPrice, setUnitMaxPrice] = useState<string>("");
 
   // Add single unit modal states
   const [isAddingSingleUnit, setIsAddingSingleUnit] = useState(false);
@@ -451,6 +487,8 @@ export function ProjectsManager({
 
   const totalConfiguredUnits = blocksConfig.reduce((sum, b) => sum + (Number(b.totalUnits) || 0), 0);
   const previewGeneratedUnits = buildGeneratedUnitsFromBlocks(blocksConfig, numberingStyle);
+  const editTotalConfiguredUnits = editBlocksConfig.reduce((sum, b) => sum + (Number(b.totalUnits) || 0), 0);
+  const editPreviewGeneratedUnits = buildGeneratedUnitsFromBlocks(editBlocksConfig, editNumberingStyle);
 
   useEffect(() => {
     setProjDeleteConfirm(0);
@@ -465,6 +503,8 @@ export function ProjectsManager({
       const currentActiveUnitsCount = units.filter(u => u.projectId === selectedProj.id && !u.isDeleted).length;
       setEditProjNumUnits(String(selectedProj.numberOfUnits || currentActiveUnitsCount || ""));
       setEditNumberingStyle(selectedProj.numberingStyle || "block_floor_unit_short");
+      const effectiveTree = getProjectEffectiveStageTree(selectedProj);
+      setStageTree(effectiveTree);
       if (Array.isArray(selectedProj.blocks) && selectedProj.blocks.length > 0) {
         setEditBlocksConfig(
           selectedProj.blocks.map(b => {
@@ -485,7 +525,7 @@ export function ProjectsManager({
       } else {
         setEditBlocksConfig([createInitialBlockConfig("A")]);
       }
-      setSyncBlocksOnSave(false);
+      setSyncBlocksOnSave(true);
     }
   }, [selectedProj?.id, units.length]);
 
@@ -590,16 +630,196 @@ export function ProjectsManager({
   const projUnits = units.filter(u => u.projectId === selectedProj?.id && !u.isDeleted);
   const deletedProjUnits = units.filter(u => u.projectId === selectedProj?.id && u.isDeleted);
 
-  // Extract unique blocks for filtering
+  // Extract unique blocks and floors for filtering
   const uniqueBlockNames: string[] = Array.from(
     new Set(projUnits.map(u => (u.blockName || "").trim()).filter(Boolean))
   );
+  const uniqueFloors: string[] = Array.from(
+    new Set(projUnits.map(u => String(u.floor ?? "0").trim()))
+  ).sort((a, b) => Number(a) - Number(b));
 
-  const filteredProjUnits = activeBlockFilter === "ALL"
-    ? projUnits
-    : activeBlockFilter === "NO_BLOCK"
-    ? projUnits.filter(u => !(u.blockName || "").trim())
-    : projUnits.filter(u => (u.blockName || "").trim() === activeBlockFilter);
+  const filteredProjUnits = projUnits.filter(u => {
+    if (activeBlockFilter !== "ALL") {
+      if (activeBlockFilter === "NO_BLOCK" && (u.blockName || "").trim() !== "") return false;
+      if (activeBlockFilter !== "NO_BLOCK" && (u.blockName || "").trim() !== activeBlockFilter) return false;
+    }
+    if (unitStatusFilter !== "ALL" && u.status !== unitStatusFilter) return false;
+    if (unitFloorFilter !== "ALL" && String(u.floor ?? "0") !== unitFloorFilter) return false;
+
+    const minA = parseFloat(toEnglishDigits(unitMinArea));
+    if (!isNaN(minA) && minA > 0 && (u.area || 0) < minA) return false;
+    const maxA = parseFloat(toEnglishDigits(unitMaxArea));
+    if (!isNaN(maxA) && maxA > 0 && (u.area || 0) > maxA) return false;
+
+    const minP = parseFloat(toEnglishDigits(unitMinPrice));
+    if (!isNaN(minP) && minP > 0 && (u.totalPrice || 0) < minP) return false;
+    const maxP = parseFloat(toEnglishDigits(unitMaxPrice));
+    if (!isNaN(maxP) && maxP > 0 && (u.totalPrice || 0) > maxP) return false;
+
+    if (unitSearchQuery.trim()) {
+      const q = toEnglishDigits(unitSearchQuery.trim()).toLowerCase();
+      const hay = toEnglishDigits(
+        `${u.unitNumber || ""} ${u.blockName || ""} ${u.buyerName || ""} ${u.floor === "0" ? "همکف" : `طبقه ${u.floor}`}`
+      ).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const handlePrintUnits = (mode: "before_filter" | "after_filter") => {
+    const targetList = mode === "before_filter" ? projUnits : filteredProjUnits;
+    const statusMap: Record<string, string> = {
+      available: "آزاد",
+      pre_sold: "پیش‌فروش شده",
+      sold: "فروخته شده",
+      bartered: "تهاتر شده"
+    };
+    printStructuredReport({
+      title: `گزارش وضعیت واحدهای پروژه «${selectedProj?.name || ""}»`,
+      subtitle: mode === "before_filter"
+        ? "چاپ کامل تمامی واحدهای پروژه (قبل از اعمال فیلتر)"
+        : "چاپ واحدهای منتخب بر اساس جستجو و فیلترهای اعمال‌شده (بعد از فیلتر)",
+      filterDescription: mode === "after_filter"
+        ? `بلوک: ${activeBlockFilter === "ALL" ? "همه" : activeBlockFilter} | وضعیت: ${unitStatusFilter === "ALL" ? "همه" : (statusMap[unitStatusFilter] || unitStatusFilter)} | طبقه: ${unitFloorFilter === "ALL" ? "همه" : (unitFloorFilter === "0" ? "همکف" : unitFloorFilter)} | عبارت جستجو: ${unitSearchQuery || "بدون محدودیت"}`
+        : undefined,
+      columns: [
+        { header: "ردیف", accessor: r => r.idx },
+        { header: "شماره واحد", accessor: r => r.unitNumber },
+        { header: "بلوک", accessor: r => r.blockName || "-" },
+        { header: "طبقه", accessor: r => (r.floor === "0" ? "همکف (۰)" : `طبقه ${toFarsiDigits(r.floor)}`) },
+        { header: "متراژ کل (متر)", accessor: r => toFarsiDigits(r.area || 0) },
+        { header: "نرخ هر متر (ریال)", accessor: r => formatRials(r.pricePerMeter || 0) },
+        { header: "بهای کل واحد (ریال)", accessor: r => formatRials(r.totalPrice || 0) },
+        { header: "وضعیت واگذاری", accessor: r => statusMap[r.status] || r.status },
+        { header: "خریدار / طرف حساب", accessor: r => r.buyerName || "-" }
+      ],
+      rows: targetList.map((u, i) => ({
+        ...u,
+        idx: toFarsiDigits(i + 1)
+      })),
+      summaryItems: [
+        { label: "تعداد کل واحدهای این گزارش", value: `${toFarsiDigits(targetList.length)} واحد` },
+        { label: "واحدهای آزاد", value: `${toFarsiDigits(targetList.filter(u => u.status === "available").length)} واحد` },
+        { label: "واحدهای واگذار شده / پیش‌فروش", value: `${toFarsiDigits(targetList.filter(u => u.status !== "available").length)} واحد` },
+        { label: "جمع متراژ واحدها", value: `${toFarsiDigits(Number(targetList.reduce((s, u) => s + (u.area || 0), 0).toFixed(2)))} مترمربع` }
+      ]
+    });
+  };
+
+  // Persist Stage Tree changes to both active project and global storage (Requirement 7)
+  const persistStageTreeChanges = (nextTree: ProjectStageBranch[], nextCurrentStage?: string) => {
+    setStageTree(nextTree);
+    saveGlobalStageTree(nextTree);
+    if (selectedProj && editProjectFn) {
+      const flatStages = flattenStageTreeToStrings(nextTree);
+      editProjectFn({
+        ...selectedProj,
+        stageTree: nextTree,
+        stages: flatStages.length > 0 ? flatStages : selectedProj.stages,
+        currentStage: nextCurrentStage || selectedProj.currentStage
+      });
+    }
+  };
+
+  const handleAddMainStageBranch = () => {
+    if (!newBranchName.trim()) return;
+    const newBranch: ProjectStageBranch = {
+      id: "stage_" + Date.now(),
+      name: newBranchName.trim(),
+      iconName: "Layers",
+      status: "pending",
+      progress: 0,
+      subStages: []
+    };
+    const nextTree = [...stageTree, newBranch];
+    setExpandedStageBranches(prev => ({ ...prev, [newBranch.id]: true }));
+    setNewBranchName("");
+    persistStageTreeChanges(nextTree);
+  };
+
+  const handleDeleteMainStageBranch = (branchId: string) => {
+    const nextTree = stageTree.filter(b => b.id !== branchId);
+    persistStageTreeChanges(nextTree);
+  };
+
+  const handleSaveBranchTitle = (branchId: string) => {
+    if (!editingBranchTitle.trim()) return;
+    const nextTree = stageTree.map(b =>
+      b.id === branchId ? { ...b, name: editingBranchTitle.trim() } : b
+    );
+    setEditingBranchId(null);
+    setEditingBranchTitle("");
+    persistStageTreeChanges(nextTree);
+  };
+
+  const handleAddSubStageItem = (branchId: string) => {
+    const text = (newSubStageInputs[branchId] || "").trim();
+    if (!text) return;
+    const nextTree = stageTree.map((b, bIdx) => {
+      if (b.id !== branchId) return b;
+      const nextSub = {
+        id: `${branchId}_sub_${Date.now()}`,
+        name: text,
+        code: `${bIdx + 1}.${b.subStages.length + 1}`,
+        status: "pending" as const,
+        progress: 0
+      };
+      return {
+        ...b,
+        subStages: [...b.subStages, nextSub]
+      };
+    });
+    setNewSubStageInputs(prev => ({ ...prev, [branchId]: "" }));
+    persistStageTreeChanges(nextTree);
+  };
+
+  const handleDeleteSubStageItem = (branchId: string, subId: string) => {
+    const nextTree = stageTree.map(b =>
+      b.id === branchId
+        ? { ...b, subStages: b.subStages.filter(s => s.id !== subId) }
+        : b
+    );
+    persistStageTreeChanges(nextTree);
+  };
+
+  const handleSaveSubStageTitle = (branchId: string, subId: string) => {
+    if (!editingSubStageTitle.trim()) return;
+    const nextTree = stageTree.map(b =>
+      b.id === branchId
+        ? {
+            ...b,
+            subStages: b.subStages.map(s =>
+              s.id === subId ? { ...s, name: editingSubStageTitle.trim() } : s
+            )
+          }
+        : b
+    );
+    setEditingSubStageId(null);
+    setEditingSubStageTitle("");
+    persistStageTreeChanges(nextTree);
+  };
+
+  const handleCycleSubStageStatus = (branchId: string, subId: string) => {
+    const order: Array<"pending" | "in_progress" | "completed"> = ["pending", "in_progress", "completed"];
+    let activatedName: string | undefined;
+    const nextTree = stageTree.map(b => {
+      if (b.id !== branchId) return b;
+      return {
+        ...b,
+        subStages: b.subStages.map(s => {
+          if (s.id !== subId) return s;
+          const nextStatus = order[(order.indexOf(s.status || "pending") + 1) % order.length];
+          if (nextStatus === "in_progress") activatedName = s.name;
+          return {
+            ...s,
+            status: nextStatus,
+            progress: nextStatus === "completed" ? 100 : nextStatus === "in_progress" ? 50 : 0
+          };
+        })
+      };
+    });
+    persistStageTreeChanges(nextTree, activatedName);
+  };
 
   // Create New Project with Automatic Per-Floor Block Structuring & Unit Numbering
   const handleCreateProject = (e: React.FormEvent) => {
@@ -607,6 +827,7 @@ export function ProjectsManager({
     if (!projName || !saveProjectFn) return;
 
     const generatedUnits = buildGeneratedUnitsFromBlocks(blocksConfig, numberingStyle);
+    const flatStages = flattenStageTreeToStrings(stageTree);
 
     saveProjectFn({
       companyId: activeCompanyId,
@@ -615,14 +836,16 @@ export function ProjectsManager({
       totalArea: Number(toEnglishDigits(projArea)) || 1000,
       budget: Number(toEnglishDigits(projBudget)) || 0,
       supervisorName: projSupervisor || "مهندس میلاد فرخی",
-      stages: ["تجهیز کارگاه", "گودبرداری", "فونداسیون", "اسکلت", "سفت‌کاری", "نازک‌کاری", "نما و تحویل"],
-      currentStage: "تجهیز کارگاه",
+      stages: flatStages.length > 0 ? flatStages : ["تجهیز کارگاه", "گودبرداری", "فونداسیون", "اسکلت", "سفت‌کاری", "نازک‌کاری", "نما و تحویل"],
+      stageTree,
+      currentStage: flatStages[0] || "تجهیز کارگاه",
       status: "active",
       numberOfBlocks: blocksConfig.length,
       numberingStyle,
       blocks: blocksConfig,
       numberOfUnits: generatedUnits.length,
       generatedUnits,
+      syncBlockUnits: true,
       defaultUnitArea: 0,
       defaultPricePerMeter: 0
     });
@@ -642,10 +865,12 @@ export function ProjectsManager({
     e.preventDefault();
     if (!selectedProj || !editProjName || !editProjectFn) return;
 
-    const totalFromBlocks = editBlocksConfig.reduce((s, b) => s + (Number(b.totalUnits) || 0), 0);
-    const finalUnitCount = syncBlocksOnSave && totalFromBlocks > 0
+    const generatedUnits = buildGeneratedUnitsFromBlocks(editBlocksConfig, editNumberingStyle);
+    const totalFromBlocks = generatedUnits.length;
+    const finalUnitCount = totalFromBlocks > 0
       ? totalFromBlocks
-      : (Number(toEnglishDigits(editProjNumUnits)) || totalFromBlocks || 0);
+      : (Number(toEnglishDigits(editProjNumUnits)) || 0);
+    const flatStages = flattenStageTreeToStrings(stageTree);
 
     editProjectFn({
       ...selectedProj,
@@ -654,11 +879,14 @@ export function ProjectsManager({
       totalArea: Number(toEnglishDigits(editProjArea)) || selectedProj.totalArea,
       budget: Number(toEnglishDigits(editProjBudget)) || 0,
       supervisorName: editProjSupervisor || "مهندس میلاد فرخی",
+      stages: flatStages.length > 0 ? flatStages : selectedProj.stages,
+      stageTree,
       currentStage: editProjStage || selectedProj.currentStage,
       numberOfBlocks: editBlocksConfig.length,
       numberingStyle: editNumberingStyle,
       blocks: editBlocksConfig,
-      syncBlockUnits: syncBlocksOnSave,
+      generatedUnits: syncBlocksOnSave ? generatedUnits : undefined,
+      syncBlockUnits: true,
       numberOfUnits: finalUnitCount,
       defaultUnitArea: 0,
       defaultPricePerMeter: 0
@@ -1355,7 +1583,26 @@ export function ProjectsManager({
             {/* Edit Blocks & Per-Floor Section */}
             <div className="bg-white p-4 rounded-xl border border-amber-200 space-y-3">
               <div className="flex flex-wrap justify-between items-center gap-2">
-                <span className="font-bold text-amber-900 text-xs">ساختار بلوک‌ها و تعداد واحد هر طبقه:</span>
+                <div>
+                  <span className="font-extrabold text-amber-950 text-xs block">
+                    ساختار بلوک‌ها و تعداد واحد هر طبقه (همگام‌سازی خودکار کم و زیاد شدن واحدها):
+                  </span>
+                  <span className="text-[10px] text-slate-600">
+                    تعداد واحد فعلی پروژه: <strong className="font-mono text-slate-900">{toFarsiDigits(projUnits.length)}</strong> واحد
+                    {" ⬅ "}
+                    تعداد واحد پس از ذخیره تغییرات: <strong className="font-mono text-indigo-700">{toFarsiDigits(editTotalConfiguredUnits)}</strong> واحد
+                    {editTotalConfiguredUnits > projUnits.length && (
+                      <span className="text-emerald-700 font-bold mr-1">
+                        (+{toFarsiDigits(editTotalConfiguredUnits - projUnits.length)} واحد جدید ساخته می‌شود)
+                      </span>
+                    )}
+                    {editTotalConfiguredUnits < projUnits.length && (
+                      <span className="text-rose-700 font-bold mr-1">
+                        ({toFarsiDigits(projUnits.length - editTotalConfiguredUnits)} واحد آزاد مازاد به صورت خودکار حذف می‌شود)
+                      </span>
+                    )}
+                  </span>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={editNumberingStyle}
@@ -1369,6 +1616,7 @@ export function ProjectsManager({
                     <option value="block_seq_padded">نام‌گذاری: A01, A02, A03...</option>
                     <option value="block_unit">نام‌گذاری: A-01, A-101...</option>
                     <option value="floor_unit">نام‌گذاری: 01, 101...</option>
+                    <option value="sequential">شماره‌گذاری ترتیبی: 1, 2, 3...</option>
                   </select>
                   <button
                     type="button"
@@ -1384,15 +1632,6 @@ export function ProjectsManager({
                   >
                     + افزودن بلوک جدید
                   </button>
-                  <label className="flex items-center gap-1.5 text-[11px] font-bold text-teal-800 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={syncBlocksOnSave}
-                      onChange={e => setSyncBlocksOnSave(e.target.checked)}
-                      className="rounded text-teal-600"
-                    />
-                    تولید خودکار واحدهای جدید بر اساس بلوک‌های زیر هنگام ذخیره
-                  </label>
                 </div>
               </div>
 
@@ -1407,21 +1646,36 @@ export function ProjectsManager({
                     <div key={idx} className="p-3 bg-amber-50/40 border border-amber-200/80 rounded-xl space-y-2.5">
                       <div className="flex justify-between items-center">
                         <span className="font-bold text-slate-800 text-[11px]">
-                          بلوک {toFarsiDigits(idx + 1)} ({toFarsiDigits(blk.totalUnits)} واحد)
+                          بلوک {toFarsiDigits(idx + 1)} {blk.name ? `(${blk.name})` : ""} — جمع این بلوک: {toFarsiDigits(blk.totalUnits)} واحد
                         </span>
-                        {editBlocksConfig.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => setEditBlocksConfig(editBlocksConfig.filter((_, i) => i !== idx))}
-                            className="text-rose-500 hover:text-rose-700 text-[10px] font-bold cursor-pointer"
-                          >
-                            حذف بلوک
-                          </button>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {editBlocksConfig.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopyBlockFloorsToAll(idx, true)}
+                              className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold cursor-pointer flex items-center gap-1"
+                            >
+                              <Copy className="w-3 h-3" />
+                              کپی برای سایر بلوک‌ها
+                            </button>
+                          )}
+                          {editBlocksConfig.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditBlocksConfig(editBlocksConfig.filter((_, i) => i !== idx));
+                                setSyncBlocksOnSave(true);
+                              }}
+                              className="text-rose-500 hover:text-rose-700 text-[10px] font-bold cursor-pointer"
+                            >
+                              حذف بلوک
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         <div>
-                          <label className="text-[9px] text-slate-500 block">نام بلوک</label>
+                          <label className="text-[9px] text-slate-500 block mb-0.5">نام بلوک</label>
                           <input
                             type="text"
                             value={blk.name}
@@ -1430,53 +1684,117 @@ export function ProjectsManager({
                           />
                         </div>
                         <div>
-                          <label className="text-[9px] text-teal-800 font-bold block">واحد در همکف (۰)</label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={blk.groundFloorUnits ?? 2}
-                            onChange={e => handleUpdateBlockQuickSetting(idx, "groundFloorUnits", e.target.value, true)}
-                            className="w-full bg-white border border-teal-300 rounded-lg px-2 py-1 text-center font-mono font-bold"
-                          />
+                          <label className="text-[9px] text-teal-800 font-bold block mb-0.5">واحد در همکف (۰)</label>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBlockQuickSetting(idx, "groundFloorUnits", Math.max(0, (blk.groundFloorUnits ?? 2) - 1), true)}
+                              className="p-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded border border-rose-200 cursor-pointer"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={blk.groundFloorUnits ?? 2}
+                              onChange={e => handleUpdateBlockQuickSetting(idx, "groundFloorUnits", e.target.value, true)}
+                              className="w-full bg-white border border-teal-300 rounded-lg px-2 py-1 text-center font-mono font-bold"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBlockQuickSetting(idx, "groundFloorUnits", (blk.groundFloorUnits ?? 2) + 1, true)}
+                              className="p-1 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded border border-teal-200 cursor-pointer"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                         <div>
-                          <label className="text-[9px] text-slate-500 block">طبقات بالای همکف</label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={blk.floors}
-                            onChange={e => handleUpdateBlockQuickSetting(idx, "floors", e.target.value, true)}
-                            className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-center font-mono font-bold"
-                          />
+                          <label className="text-[9px] text-slate-500 block mb-0.5">طبقات بالای همکف</label>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBlockQuickSetting(idx, "floors", Math.max(0, (blk.floors ?? 4) - 1), true)}
+                              className="p-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded border border-rose-200 cursor-pointer"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={blk.floors}
+                              onChange={e => handleUpdateBlockQuickSetting(idx, "floors", e.target.value, true)}
+                              className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-center font-mono font-bold"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBlockQuickSetting(idx, "floors", (blk.floors ?? 4) + 1, true)}
+                              className="p-1 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded border border-teal-200 cursor-pointer"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                         <div>
-                          <label className="text-[9px] text-indigo-800 font-bold block">واحد در سایر طبقات</label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={blk.unitsPerFloor}
-                            onChange={e => handleUpdateBlockQuickSetting(idx, "unitsPerFloor", e.target.value, true)}
-                            className="w-full bg-white border border-indigo-300 rounded-lg px-2 py-1 text-center font-mono font-bold"
-                          />
+                          <label className="text-[9px] text-indigo-800 font-bold block mb-0.5">واحد در سایر طبقات</label>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBlockQuickSetting(idx, "unitsPerFloor", Math.max(1, (blk.unitsPerFloor ?? 4) - 1), true)}
+                              className="p-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded border border-rose-200 cursor-pointer"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={blk.unitsPerFloor}
+                              onChange={e => handleUpdateBlockQuickSetting(idx, "unitsPerFloor", e.target.value, true)}
+                              className="w-full bg-white border border-indigo-300 rounded-lg px-2 py-1 text-center font-mono font-bold"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBlockQuickSetting(idx, "unitsPerFloor", (blk.unitsPerFloor ?? 4) + 1, true)}
+                              className="p-1 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded border border-teal-200 cursor-pointer"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 pt-1">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-1.5 pt-1">
                         {floorConfigs.map(fc => (
                           <div key={fc.floorNumber} className="bg-white p-1.5 rounded-lg border border-slate-200 flex items-center justify-between gap-1">
                             <span className="text-[9px] font-bold text-slate-600">
                               {fc.floorNumber === 0 ? "همکف:" : `ط${toFarsiDigits(fc.floorNumber)}:`}
                             </span>
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              value={fc.unitsCount}
-                              onChange={e => {
-                                const val = parseInt(toEnglishDigits(e.target.value).replace(/[^\d]/g, ""), 10) || 0;
-                                handleUpdateFloorUnitCount(idx, fc.floorNumber, val, true);
-                              }}
-                              className="w-10 bg-slate-50 border border-slate-200 rounded text-center font-mono font-bold text-[10px]"
-                            />
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateFloorUnitCount(idx, fc.floorNumber, fc.unitsCount - 1, true)}
+                                className="px-1 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded text-[10px] font-bold cursor-pointer"
+                              >
+                                -
+                              </button>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={fc.unitsCount}
+                                onChange={e => {
+                                  const val = parseInt(toEnglishDigits(e.target.value).replace(/[^\d]/g, ""), 10) || 0;
+                                  handleUpdateFloorUnitCount(idx, fc.floorNumber, val, true);
+                                }}
+                                className="w-8 bg-slate-50 border border-slate-200 rounded text-center font-mono font-bold text-[10px]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateFloorUnitCount(idx, fc.floorNumber, fc.unitsCount + 1, true)}
+                                className="px-1 py-0.5 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded text-[10px] font-bold cursor-pointer"
+                              >
+                                +
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -1484,11 +1802,29 @@ export function ProjectsManager({
                   );
                 })}
               </div>
+
+              {editPreviewGeneratedUnits.length > 0 && (
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-1.5">
+                  <div className="text-[10px] font-extrabold text-slate-700">
+                    پیش‌نمایش زنده واحدهای پروژه پس از ویرایش ({toFarsiDigits(editPreviewGeneratedUnits.length)} واحد):
+                  </div>
+                  <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+                    {editPreviewGeneratedUnits.map((u, i) => (
+                      <span
+                        key={i}
+                        className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[10px] font-mono font-bold text-indigo-800"
+                      >
+                        {u.unitNumber}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2">
               <button type="submit" className="bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl px-6 py-2.5 transition-all cursor-pointer shadow-sm">
-                ذخیره تغییرات پروژه
+                ذخیره تغییرات پروژه و به‌روزرسانی خودکار واحدها ({toFarsiDigits(editTotalConfiguredUnits)} واحد)
               </button>
               <button
                 type="button"
@@ -1614,28 +1950,269 @@ export function ProjectsManager({
                 </div>
               </div>
 
-              {/* Construction Stages Track */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold text-slate-800">مراحل و گام‌های فیزیکی ساخت:</h4>
-                <div className="space-y-1.5 bg-slate-50/50 p-3 rounded-xl border border-slate-100/70">
-                  {selectedProj.stages.map((stg, i) => {
-                    const isPassed = selectedProj.stages.indexOf(selectedProj.currentStage) >= i;
-                    const isActive = selectedProj.currentStage === stg;
+              {/* Hierarchical & Editable Construction Stages Tree (Requirement 7) */}
+              <div className="space-y-2.5 bg-slate-50/70 p-3.5 rounded-2xl border border-slate-200/80">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                    <FolderTree className="w-4 h-4 text-teal-600" />
+                    درخت شاخه‌بندی مراحل ساخت پروژه ({toFarsiDigits(stageTree.length)} شاخه اصلی)
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => setIsStageManagerOpen(!isStageManagerOpen)}
+                    className="px-2.5 py-1 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-[10px] font-bold transition-all cursor-pointer"
+                  >
+                    {isStageManagerOpen ? "بستن ویرایشگر مراحل" : "ویرایش و افزودن شاخه‌ها"}
+                  </button>
+                </div>
+
+                <div className="text-[10px] text-teal-800 bg-teal-50 border border-teal-200 rounded-xl px-2.5 py-1.5 font-bold flex items-center justify-between">
+                  <span>مرحله جاری پروژه:</span>
+                  <span className="font-extrabold text-teal-950">{selectedProj.currentStage}</span>
+                </div>
+
+                {/* Add Main Branch Input when Stage Manager is Open */}
+                {isStageManagerOpen && (
+                  <div className="space-y-2 pt-1 border-t border-slate-200">
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        placeholder="نام شاخه اصلی جدید (مثال: ۱۱. محوطه‌سازی و فضای سبز)..."
+                        value={newBranchName}
+                        onChange={e => setNewBranchName(e.target.value)}
+                        className="flex-1 bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-[11px] font-bold focus:outline-none focus:border-teal-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddMainStageBranch}
+                        className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-[10px] font-bold cursor-pointer shrink-0"
+                      >
+                        + شاخه اصلی
+                      </button>
+                    </div>
+                    <div className="flex justify-between items-center text-[10px] text-slate-500">
+                      <span>برای تغییر وضعیت هر زیرشاخه روی دایره وضعیت آن کلیک کنید.</span>
+                      <button
+                        type="button"
+                        onClick={() => persistStageTreeChanges(DEFAULT_PROJECT_STAGE_TREE)}
+                        className="text-indigo-600 hover:text-indigo-800 font-bold flex items-center gap-1 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        بازنشانی به ساختار استاندارد ۱۰ شاخه‌ای
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Tree Branches List */}
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-0.5">
+                  {stageTree.map((branch) => {
+                    const isExpanded = !!expandedStageBranches[branch.id];
+                    const completedCount = (branch.subStages || []).filter(s => s.status === "completed").length;
+                    const totalSubs = (branch.subStages || []).length;
 
                     return (
-                      <div key={stg} className="flex items-center gap-2 text-xs">
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            isActive ? "bg-amber-500 animate-pulse" : isPassed ? "bg-teal-500" : "bg-slate-200"
-                          }`}
-                        />
-                        <span
-                          className={`${
-                            isActive ? "text-amber-600 font-bold" : isPassed ? "text-teal-600" : "text-slate-400 font-light"
-                          }`}
-                        >
-                          {stg} {isActive && "(گام فعلی)"}
-                        </span>
+                      <div key={branch.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                        <div className="flex items-center justify-between gap-1.5 px-3 py-2 bg-slate-50/80 border-b border-slate-100">
+                          {editingBranchId === branch.id ? (
+                            <div className="flex items-center gap-1 flex-1">
+                              <input
+                                type="text"
+                                value={editingBranchTitle}
+                                onChange={e => setEditingBranchTitle(e.target.value)}
+                                className="flex-1 bg-white border border-teal-400 rounded-lg px-2 py-1 text-[11px] font-bold"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSaveBranchTitle(branch.id)}
+                                className="px-2 py-1 bg-teal-600 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                              >
+                                ذخیره
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingBranchId(null)}
+                                className="px-1.5 py-1 bg-slate-200 text-slate-700 rounded-lg text-[10px] cursor-pointer"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ) : (
+                            <div
+                              onClick={() =>
+                                setExpandedStageBranches(prev => ({
+                                  ...prev,
+                                  [branch.id]: !prev[branch.id]
+                                }))
+                              }
+                              className="flex items-center gap-1.5 flex-1 cursor-pointer select-none"
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                              ) : (
+                                <ChevronLeft className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              )}
+                              <span className="text-[11px] font-extrabold text-slate-800 leading-snug">
+                                {branch.name}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className="text-[9px] bg-slate-200/80 text-slate-700 px-1.5 py-0.5 rounded font-mono font-bold">
+                              {toFarsiDigits(completedCount)}/{toFarsiDigits(totalSubs)}
+                            </span>
+                            {isStageManagerOpen && editingBranchId !== branch.id && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingBranchId(branch.id);
+                                    setEditingBranchTitle(branch.name);
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-amber-600 cursor-pointer"
+                                  title="ویرایش نام شاخه اصلی"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMainStageBranch(branch.id)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+                                  title="حذف شاخه اصلی"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {isExpanded && (
+                          <div className="p-2.5 space-y-1.5 bg-white">
+                            {(branch.subStages || []).map((sub) => {
+                              const isCurrent = selectedProj.currentStage === sub.name;
+                              return (
+                                <div
+                                  key={sub.id}
+                                  className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg border text-[11px] ${
+                                    isCurrent
+                                      ? "bg-amber-50/80 border-amber-300 text-amber-950 font-bold"
+                                      : sub.status === "completed"
+                                      ? "bg-emerald-50/40 border-emerald-100 text-emerald-900"
+                                      : "bg-slate-50/50 border-slate-100 text-slate-700"
+                                  }`}
+                                >
+                                  {editingSubStageId === sub.id ? (
+                                    <div className="flex items-center gap-1 flex-1">
+                                      <input
+                                        type="text"
+                                        value={editingSubStageTitle}
+                                        onChange={e => setEditingSubStageTitle(e.target.value)}
+                                        className="flex-1 bg-white border border-teal-400 rounded px-2 py-0.5 text-[11px]"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSaveSubStageTitle(branch.id, sub.id)}
+                                        className="px-2 py-0.5 bg-teal-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                                      >
+                                        ثبت
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingSubStageId(null)}
+                                        className="px-1.5 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px] cursor-pointer"
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="flex items-center gap-2 flex-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleCycleSubStageStatus(branch.id, sub.id)}
+                                          className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center cursor-pointer shrink-0 ${
+                                            sub.status === "completed"
+                                              ? "bg-emerald-500 border-emerald-600 text-white"
+                                              : sub.status === "in_progress" || isCurrent
+                                              ? "bg-amber-400 border-amber-500 text-white"
+                                              : "bg-white border-slate-300"
+                                          }`}
+                                          title="کلیک جهت تغییر وضعیت (در انتظار / در حال اجرا / تکمیل شده)"
+                                        >
+                                          {sub.status === "completed" && "✓"}
+                                        </button>
+                                        <span
+                                          onClick={() => persistStageTreeChanges(stageTree, sub.name)}
+                                          className="cursor-pointer hover:text-teal-700 flex-1 leading-relaxed"
+                                          title="کلیک جهت انتخاب به عنوان مرحله جاری پروژه"
+                                        >
+                                          {sub.name}
+                                          {isCurrent && (
+                                            <span className="mr-1.5 text-[9px] bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded font-bold">
+                                              گام فعلی
+                                            </span>
+                                          )}
+                                        </span>
+                                      </div>
+
+                                      {isStageManagerOpen && (
+                                        <div className="flex items-center gap-1 shrink-0">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setEditingSubStageId(sub.id);
+                                              setEditingSubStageTitle(sub.name);
+                                            }}
+                                            className="p-0.5 text-slate-400 hover:text-amber-600 cursor-pointer"
+                                            title="ویرایش عنوان زیرشاخه"
+                                          >
+                                            <Edit3 className="w-3 h-3" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteSubStageItem(branch.id, sub.id)}
+                                            className="p-0.5 text-slate-400 hover:text-rose-600 cursor-pointer"
+                                            title="حذف زیرشاخه"
+                                          >
+                                            <Trash2 className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })}
+
+                            {/* Add new sub-stage input inside branch */}
+                            <div className="flex items-center gap-1 pt-1">
+                              <input
+                                type="text"
+                                placeholder={`+ افزودن زیرشاخه جدید در «${branch.name.slice(0, 22)}...»`}
+                                value={newSubStageInputs[branch.id] || ""}
+                                onChange={e =>
+                                  setNewSubStageInputs(prev => ({ ...prev, [branch.id]: e.target.value }))
+                                }
+                                onKeyDown={e => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    handleAddSubStageItem(branch.id);
+                                  }
+                                }}
+                                className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[10px] focus:outline-none focus:border-teal-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleAddSubStageItem(branch.id)}
+                                className="px-2.5 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-lg text-[10px] font-bold cursor-pointer shrink-0"
+                              >
+                                + افزودن زیرشاخه
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1721,7 +2298,25 @@ export function ProjectsManager({
                   </h3>
                 </div>
 
-                <div className="flex gap-1.5">
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handlePrintUnits("after_filter")}
+                    className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[10px] font-bold border border-indigo-200 flex items-center gap-1 cursor-pointer"
+                    title="چاپ واحدهای فیلتر شده فعلی"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>چاپ نتایج فیلتر شده ({toFarsiDigits(filteredProjUnits.length)})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePrintUnits("before_filter")}
+                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold border border-slate-200 flex items-center gap-1 cursor-pointer"
+                    title="چاپ کل واحدهای پروژه بدون فیلتر"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>چاپ کل واحدها (قبل از فیلتر: {toFarsiDigits(projUnits.length)})</span>
+                  </button>
                   <button
                     onClick={() => {
                       setIsAddingSingleUnit(true);
@@ -1733,6 +2328,130 @@ export function ProjectsManager({
                     ➕ افزودن تک واحد جدید
                   </button>
                 </div>
+              </div>
+
+              {/* Search & Advanced Search Bar for Units (Requirement 2) */}
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-3">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={unitSearchQuery}
+                      onChange={e => setUnitSearchQuery(e.target.value)}
+                      placeholder="جستجوی سریع شماره واحد (مثلاً A01)، نام خریدار، بلوک یا طبقه..."
+                      className="w-full bg-white border border-slate-200 rounded-xl pr-8 pl-3 py-1.5 text-xs focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedUnitSearch(!showAdvancedUnitSearch)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${
+                      showAdvancedUnitSearch
+                        ? "bg-teal-600 text-white border-teal-600"
+                        : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    <Filter className="w-3.5 h-3.5" />
+                    <span>جستجوی پیشرفته واحدها</span>
+                  </button>
+                  {(unitSearchQuery || unitStatusFilter !== "ALL" || unitFloorFilter !== "ALL" || unitMinArea || unitMaxArea || unitMinPrice || unitMaxPrice || activeBlockFilter !== "ALL") && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUnitSearchQuery("");
+                        setUnitStatusFilter("ALL");
+                        setUnitFloorFilter("ALL");
+                        setUnitMinArea("");
+                        setUnitMaxArea("");
+                        setUnitMinPrice("");
+                        setUnitMaxPrice("");
+                        setActiveBlockFilter("ALL");
+                      }}
+                      className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-[11px] font-bold cursor-pointer"
+                    >
+                      پاکسازی فیلترها
+                    </button>
+                  )}
+                </div>
+
+                {showAdvancedUnitSearch && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-2 border-t border-slate-200/70 text-xs">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">وضعیت واگذاری</label>
+                      <select
+                        value={unitStatusFilter}
+                        onChange={e => setUnitStatusFilter(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-bold"
+                      >
+                        <option value="ALL">همه وضعیت‌ها</option>
+                        <option value="available">آزاد / آماده واگذاری</option>
+                        <option value="pre_sold">پیش‌فروش شده</option>
+                        <option value="sold">فروخته شده</option>
+                        <option value="bartered">تهاتر شده</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">طبقه</label>
+                      <select
+                        value={unitFloorFilter}
+                        onChange={e => setUnitFloorFilter(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-bold"
+                      >
+                        <option value="ALL">همه طبقات</option>
+                        {uniqueFloors.map(fl => (
+                          <option key={fl} value={fl}>
+                            {fl === "0" ? "طبقه همکف (۰)" : `طبقه ${toFarsiDigits(fl)}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">حداقل متراژ (متر)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={unitMinArea}
+                        onChange={e => setUnitMinArea(toEnglishDigits(e.target.value))}
+                        placeholder="مثلاً 80"
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">حداکثر متراژ (متر)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={unitMaxArea}
+                        onChange={e => setUnitMaxArea(toEnglishDigits(e.target.value))}
+                        placeholder="مثلاً 200"
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">حداقل قیمت کل (ریال)</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={unitMinPrice}
+                        onChange={e => setUnitMinPrice(toEnglishDigits(e.target.value))}
+                        placeholder="حداقل بهای کل"
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">حداکثر قیمت کل (ریال)</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={unitMaxPrice}
+                        onChange={e => setUnitMaxPrice(toEnglishDigits(e.target.value))}
+                        placeholder="حداکثر بهای کل"
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Block Filter Tabs */}

@@ -123,10 +123,14 @@ interface Project {
   totalArea: number; // متر مربع زیربنا
   budget: number; // بودجه کل به ریال/تومان
   stages: string[]; // مراحل ساخت مثل پی‌ریزی، اسکلت، سفت‌کاری، نازک‌کاری، تاسیسات، نما و غیره
+  stageTree?: any[];
   currentStage: string;
   status: "active" | "completed" | "paused";
   supervisorName?: string;
   numberOfUnits?: number;
+  numberOfBlocks?: number;
+  numberingStyle?: string;
+  blocks?: any[];
   defaultUnitArea?: number;
   defaultUnitPrice?: number;
   isDeleted?: boolean;
@@ -195,6 +199,7 @@ interface TransactionPayment {
   invoiceDescription?: string;
   settlementMethod?: string;
   paymentStatus?: string;
+  sourceAccount?: string;
   destinationAccount?: string;
   receiptFileName?: string;
   receiptFileData?: string;
@@ -210,6 +215,8 @@ interface Transaction {
   subCategory?: string;
   amount: number;
   accountId: string;
+  sourceAccount?: string;
+  destinationAccount?: string;
   personName: string;
   date: string;
   description: string;
@@ -555,45 +562,69 @@ function recalculatePreSaleInstallments(db: DatabaseSchema, preSaleId: string) {
   const preSale = db.preSales?.find(ps => ps.id === preSaleId);
   const contact = preSale ? db.contacts?.find(c => c.id === preSale.contactId) : undefined;
   
-  let payments = [];
-  if (contact) {
-    if (contact.paymentMethod === "barter") {
-      // For barter contacts, count all expense transactions under their name for this project, 
-      // and any income transactions linked to this pre-sale or their name
+  let payments: Transaction[] = [];
+  if (preSale) {
+    if (contact && contact.paymentMethod === "barter") {
       payments = db.transactions.filter(t => 
+        !t.isDeleted &&
         ((t.type === "expense" && t.personName.trim() === contact.name.trim()) || 
-         (t.type === "income" && (t.preSaleId === preSaleId || t.personName.trim() === contact.name.trim()))) &&
-        t.projectId === preSale!.projectId
+         (t.type === "income" && (t.preSaleId === preSaleId || t.contactId === contact.id || t.personName.trim() === contact.name.trim()))) &&
+        t.projectId === preSale.projectId
       );
     } else {
-      // For regular contacts, count any income transactions matching their name or preSaleId
       payments = db.transactions.filter(t => 
+        !t.isDeleted &&
         t.type === "income" && 
-        (t.preSaleId === preSaleId || t.personName.trim() === contact.name.trim())
+        (t.preSaleId === preSaleId || (contact && (t.contactId === contact.id || t.personName.trim() === contact.name.trim())))
       );
     }
   }
 
-  let totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
+  const contractTotalPaid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  let remainingPaidForInstallments = contractTotalPaid;
 
   for (const inst of installments) {
-    if (totalPaid >= inst.amount) {
+    if (remainingPaidForInstallments >= inst.amount) {
       inst.isPaid = true;
       inst.amountPaid = inst.amount;
+      inst.paidAmount = inst.amount;
       inst.percentPaid = 100;
       inst.paidDate = payments.length > 0 ? payments[payments.length - 1].date : inst.dueDate;
-      totalPaid -= inst.amount;
-    } else if (totalPaid > 0) {
+      remainingPaidForInstallments -= inst.amount;
+    } else if (remainingPaidForInstallments > 0) {
       inst.isPaid = false;
       inst.paidDate = undefined;
-      inst.amountPaid = totalPaid;
-      inst.percentPaid = Math.round((totalPaid / inst.amount) * 100);
-      totalPaid = 0;
+      inst.amountPaid = remainingPaidForInstallments;
+      inst.paidAmount = remainingPaidForInstallments;
+      inst.percentPaid = inst.amount > 0 ? Math.round((remainingPaidForInstallments / inst.amount) * 100) : 0;
+      remainingPaidForInstallments = 0;
     } else {
       inst.isPaid = false;
       inst.paidDate = undefined;
       inst.amountPaid = 0;
+      inst.paidAmount = 0;
       inst.percentPaid = 0;
+    }
+  }
+
+  // Keep unit downPayment / paid contribution updated
+  if (preSale && db.units) {
+    const uIdx = db.units.findIndex(u => u.id === preSale.unitId);
+    if (uIdx >= 0) {
+      db.units[uIdx].downPayment = contractTotalPaid;
+    }
+  }
+
+  // Ensure buyer contact balance reflects exact remaining contract debt (totalPrice - totalPaid)
+  if (contact && contact.paymentMethod !== "barter") {
+    const contactPreSales = (db.preSales || []).filter(ps => ps.contactId === contact.id);
+    if (contactPreSales.length > 0 && contact.role === "pre_buyer") {
+      const totalContractsValue = contactPreSales.reduce((s, ps) => s + Number(ps.totalPrice || 0), 0);
+      const preSaleIds = new Set(contactPreSales.map(ps => ps.id));
+      const allBuyerPayments = (db.transactions || [])
+        .filter(t => !t.isDeleted && t.type === "income" && ((t.preSaleId && preSaleIds.has(t.preSaleId)) || t.contactId === contact.id || (t.personName && t.personName.trim() === contact.name.trim())))
+        .reduce((s, t) => s + Number(t.amount || 0), 0);
+      contact.balance = Math.max(0, totalContractsValue - allBuyerPayments);
     }
   }
 }
@@ -1182,6 +1213,7 @@ app.post("/api/projects", (req, res) => {
     totalArea: Number(req.body.totalArea || 0),
     budget: Number(req.body.budget || 0),
     stages: req.body.stages || existingProj?.stages || SEED_STAGES,
+    stageTree: Array.isArray(req.body.stageTree) ? req.body.stageTree : existingProj?.stageTree,
     currentStage: req.body.currentStage || existingProj?.currentStage || SEED_STAGES[0],
     status: req.body.status || existingProj?.status || "active",
     supervisorName: req.body.supervisorName || existingProj?.supervisorName || "مهندس میلاد فرخی",
@@ -1201,39 +1233,25 @@ app.post("/api/projects", (req, res) => {
     db.projects.push(newProject);
   }
 
-  // Auto-generate units based on automatic block structuring or requested unit count
+  // Synchronize units dynamically (both create and edit, increasing or decreasing units per floor/block)
   if (!db.units) db.units = [];
-  const defArea = Number(req.body.defaultUnitArea || newProject.defaultUnitArea || 0);
-  const defPrice = Number(req.body.defaultUnitPrice || newProject.defaultUnitPrice || 0);
+  const defArea = Number(req.body.defaultUnitArea ?? newProject.defaultUnitArea ?? 0);
+  const defPrice = Number(req.body.defaultUnitPrice ?? newProject.defaultUnitPrice ?? 0);
   const currentActiveUnits = db.units.filter(u => u.projectId === newProject.id && !u.isDeleted);
 
-  if (isNew && Array.isArray(req.body.generatedUnits) && req.body.generatedUnits.length > 0) {
-    req.body.generatedUnits.forEach((gu: any, idx: number) => {
-      db.units.push({
-        id: "u_" + Date.now() + "_" + (idx + 1) + "_" + Math.floor(Math.random() * 1000),
-        projectId: newProject.id,
-        unitNumber: String(gu.unitNumber || (idx + 1)),
-        blockName: String(gu.blockName || ""),
-        floor: String(gu.floor ?? "1"),
-        saleAreaType: "useful",
-        usefulArea: defArea,
-        storageArea: 0,
-        parkingArea: 0,
-        commonArea: 0,
-        area: defArea,
-        pricePerMeter: defPrice,
-        totalPrice: defArea * defPrice,
-        status: "available",
-        specificExpenses: []
-      });
-    });
-    newProject.numberOfUnits = req.body.generatedUnits.length;
-  } else if (Array.isArray(req.body.blocks) && req.body.blocks.length > 0 && (isNew || req.body.syncBlockUnits)) {
-    const style = req.body.numberingStyle || "block_floor_unit_short";
-    let globalSeq = currentActiveUnits.length;
-    let totalGeneratedOrExisting = 0;
+  // Build desired units list from generatedUnits, blocks, or numberOfUnits
+  let desiredUnits: Array<{ unitNumber: string; blockName: string; floor: string }> = [];
+  const style = newProject.numberingStyle || "block_floor_unit_short";
 
-    req.body.blocks.forEach((blk: any) => {
+  if (Array.isArray(req.body.generatedUnits) && req.body.generatedUnits.length > 0) {
+    desiredUnits = req.body.generatedUnits.map((gu: any, idx: number) => ({
+      unitNumber: String(gu.unitNumber || (idx + 1)),
+      blockName: String(gu.blockName || ""),
+      floor: String(gu.floor ?? "1")
+    }));
+  } else if (Array.isArray(newProject.blocks) && newProject.blocks.length > 0) {
+    let globalSeq = 0;
+    newProject.blocks.forEach((blk: any) => {
       const bName = String(blk.name || "").trim();
       const floors = Math.max(0, Number(blk.floors ?? 4));
       const unitsPerFloor = Math.max(1, Number(blk.unitsPerFloor ?? 4));
@@ -1254,16 +1272,10 @@ app.post("/api/projects", (req, res) => {
         }
       }
 
-      const existingInBlock = currentActiveUnits.filter(u => (u.blockName || "") === bName);
       let seqInBlock = 0;
-
       floorConfigs.forEach(fc => {
         for (let posInFloor = 1; posInFloor <= fc.unitsCount; posInFloor++) {
           seqInBlock++;
-          totalGeneratedOrExisting++;
-          if (!isNew && seqInBlock <= existingInBlock.length) {
-            continue;
-          }
           globalSeq++;
           const floorNum = fc.floorNumber;
           let unitNumber = `${bName}${floorNum}${posInFloor}`;
@@ -1278,15 +1290,94 @@ app.post("/api/projects", (req, res) => {
           } else if (style === "floor_unit") {
             unitNumber = floorNum === 0 ? `0${posInFloor}` : String(floorNum * 100 + posInFloor);
           } else if (style === "sequential") {
-            unitNumber = bName && req.body.blocks.length > 1 ? `${bName}-${seqInBlock}` : String(globalSeq);
+            unitNumber = bName && newProject.blocks!.length > 1 ? `${bName}-${seqInBlock}` : String(globalSeq);
           }
 
-          db.units.push({
-            id: "u_" + Date.now() + "_" + globalSeq + "_" + Math.floor(Math.random() * 1000),
-            projectId: newProject.id,
+          desiredUnits.push({
             unitNumber,
             blockName: bName,
-            floor: String(floorNum),
+            floor: String(floorNum)
+          });
+        }
+      });
+    });
+  } else {
+    const requestedUnitsCount = Number(req.body.numberOfUnits ?? req.body.totalUnits ?? 0);
+    if (requestedUnitsCount > 0) {
+      const numBlocks = Math.max(1, Number(req.body.numberOfBlocks) || 1);
+      const blockLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
+      const unitsPerBlock = Math.ceil(requestedUnitsCount / numBlocks);
+      for (let i = 1; i <= requestedUnitsCount; i++) {
+        const blockIdx = numBlocks > 1 ? Math.min(numBlocks - 1, Math.floor((i - 1) / unitsPerBlock)) : 0;
+        const bName = numBlocks > 1 ? (blockLabels[blockIdx] || `بلوک ${blockIdx + 1}`) : "";
+        const idxInBlock = numBlocks > 1 ? ((i - 1) % unitsPerBlock) + 1 : i;
+        const floor = String(Math.ceil(idxInBlock / 2));
+        const posInFloor = ((idxInBlock - 1) % 2) + 1;
+        const unitNumber = style === "floor_unit"
+          ? String(Number(floor) * 100 + posInFloor)
+          : String(i);
+        desiredUnits.push({ unitNumber, blockName: bName, floor });
+      }
+    }
+  }
+
+  if (desiredUnits.length > 0) {
+    // Group existing active units by blockName so per-block changes preserve existing units in that block
+    const usedUnitIds = new Set<string>();
+    const desiredByBlock = new Map<string, Array<{ unitNumber: string; blockName: string; floor: string }>>();
+    desiredUnits.forEach(du => {
+      const key = du.blockName || "";
+      if (!desiredByBlock.has(key)) desiredByBlock.set(key, []);
+      desiredByBlock.get(key)!.push(du);
+    });
+
+    const existingByBlock = new Map<string, UnitItem[]>();
+    currentActiveUnits.forEach(u => {
+      const key = u.blockName || "";
+      if (!existingByBlock.has(key)) existingByBlock.set(key, []);
+      existingByBlock.get(key)!.push(u);
+    });
+
+    let createCounter = 0;
+    // Process each block in desiredByBlock
+    desiredByBlock.forEach((blockDesiredList, blockKey) => {
+      const blockExisting = existingByBlock.get(blockKey) || [];
+      // Sort blockExisting so sold/pre_sold/bartered units or matching unitNumbers are prioritized
+      blockDesiredList.forEach((du, idx) => {
+        let matchedUnit = blockExisting.find(eu => !usedUnitIds.has(eu.id) && eu.unitNumber === du.unitNumber && String(eu.floor) === String(du.floor));
+        if (!matchedUnit) {
+          matchedUnit = blockExisting.find(eu => !usedUnitIds.has(eu.id) && eu.unitNumber === du.unitNumber);
+        }
+        if (!matchedUnit && idx < blockExisting.length && !usedUnitIds.has(blockExisting[idx].id)) {
+          matchedUnit = blockExisting[idx];
+        }
+        if (!matchedUnit) {
+          matchedUnit = blockExisting.find(eu => !usedUnitIds.has(eu.id));
+        }
+
+        if (matchedUnit) {
+          usedUnitIds.add(matchedUnit.id);
+          matchedUnit.unitNumber = du.unitNumber;
+          matchedUnit.blockName = du.blockName;
+          matchedUnit.floor = du.floor;
+          if (matchedUnit.status === "available") {
+            if (defArea > 0 && (!matchedUnit.area || matchedUnit.area === existingProj?.defaultUnitArea)) {
+              matchedUnit.usefulArea = defArea;
+              matchedUnit.area = defArea;
+            }
+            if (defPrice > 0 && (!matchedUnit.pricePerMeter || matchedUnit.pricePerMeter === existingProj?.defaultUnitPrice)) {
+              matchedUnit.pricePerMeter = defPrice;
+            }
+            matchedUnit.totalPrice = (matchedUnit.area || defArea) * (matchedUnit.pricePerMeter || defPrice);
+          }
+        } else {
+          createCounter++;
+          db.units.push({
+            id: "u_" + Date.now() + "_" + createCounter + "_" + Math.floor(Math.random() * 1000),
+            projectId: newProject.id,
+            unitNumber: du.unitNumber,
+            blockName: du.blockName,
+            floor: du.floor,
             saleAreaType: "useful",
             usefulArea: defArea,
             storageArea: 0,
@@ -1301,48 +1392,19 @@ app.post("/api/projects", (req, res) => {
         }
       });
     });
-    if (totalGeneratedOrExisting > 0) {
-      newProject.numberOfUnits = totalGeneratedOrExisting;
-    }
-  } else {
-    const requestedUnitsCount = Number(req.body.numberOfUnits ?? req.body.totalUnits ?? 0);
-    if (requestedUnitsCount > 0) {
-      const numBlocks = Math.max(1, Number(req.body.numberOfBlocks) || 1);
-      const blockLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
-      const startIdx = isNew ? 1 : (currentActiveUnits.length + 1);
 
-      if (requestedUnitsCount >= startIdx) {
-        const unitsPerBlock = Math.ceil(requestedUnitsCount / numBlocks);
-        for (let i = startIdx; i <= requestedUnitsCount; i++) {
-          const blockIdx = numBlocks > 1 ? Math.min(numBlocks - 1, Math.floor((i - 1) / unitsPerBlock)) : 0;
-          const bName = numBlocks > 1 ? (blockLabels[blockIdx] || `بلوک ${blockIdx + 1}`) : "";
-          const idxInBlock = numBlocks > 1 ? ((i - 1) % unitsPerBlock) + 1 : i;
-          const floor = String(Math.ceil(idxInBlock / 2));
-          const posInFloor = ((idxInBlock - 1) % 2) + 1;
-          const unitNumber = req.body.numberingStyle === "floor_unit"
-            ? String(Number(floor) * 100 + posInFloor)
-            : String(i);
-
-          db.units.push({
-            id: "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100),
-            projectId: newProject.id,
-            unitNumber,
-            blockName: bName,
-            floor,
-            saleAreaType: "useful",
-            usefulArea: defArea,
-            storageArea: 0,
-            parkingArea: 0,
-            commonArea: 0,
-            area: defArea,
-            pricePerMeter: defPrice,
-            totalPrice: defArea * defPrice,
-            status: "available",
-            specificExpenses: []
-          });
-        }
+    // Soft-delete any excess available units that are no longer in desiredUnits
+    const nowShamsi = getTodayShamsiServer();
+    currentActiveUnits.forEach(eu => {
+      if (!usedUnitIds.has(eu.id) && eu.status === "available") {
+        eu.isDeleted = true;
+        eu.deletedAt = nowShamsi;
       }
-    }
+    });
+
+    // Update project.numberOfUnits to exact count of remaining active units
+    const finalActiveUnits = db.units.filter(u => u.projectId === newProject.id && !u.isDeleted);
+    newProject.numberOfUnits = finalActiveUnits.length;
   }
 
   writeDb(db);
@@ -1484,6 +1546,8 @@ app.post("/api/transactions", (req, res) => {
     subCategory: req.body.subCategory,
     amount: Number(req.body.amount || 0),
     accountId: resolvedAccountId,
+    sourceAccount: req.body.sourceAccount || "",
+    destinationAccount: req.body.destinationAccount || "",
     personName: req.body.personName || "طرف حساب عمومی",
     date: req.body.date || getTodayShamsiServer(),
     description: req.body.description || "",
@@ -1496,13 +1560,18 @@ app.post("/api/transactions", (req, res) => {
     payments: (req.body.payments || []).map((p: any) => ({
       ...p,
       accountId: p.accountId || resolvedAccountId,
+      sourceAccount: p.sourceAccount || req.body.sourceAccount || "",
+      destinationAccount: p.destinationAccount || req.body.destinationAccount || "",
       invoiceNumber: p.invoiceNumber || req.body.invoiceNumber || "",
       invoiceDescription: p.invoiceDescription || p.description || req.body.description || ""
     })),
-    approvalStatus: req.body.approvalStatus || "approved",
+    // Expense invoices MUST default to "pending" until manager explicitly approves them (even if paid with receipt slip)
+    approvalStatus: req.body.approvalStatus || (req.body.type === "expense" ? "pending" : "approved"),
     approvedAmount: req.body.approvedAmount !== undefined ? Number(req.body.approvedAmount) : undefined,
     approvedBy: req.body.approvedBy,
-    approvedDate: req.body.approvedDate
+    approvedDate: req.body.approvedDate,
+    preSaleId: req.body.preSaleId,
+    contactId: req.body.contactId
   };
 
   // Determine paymentStatus accurately when payments array is provided
@@ -2514,17 +2583,7 @@ app.post("/api/contacts", (req, res) => {
         if (unitIdx >= 0) {
           db.units[unitIdx].contractId = preSaleId;
         }
-
-        // Create default installments (100% of the price as single installment)
-        if (!db.preSaleInstallments) db.preSaleInstallments = [];
-        db.preSaleInstallments.push({
-          id: "inst_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
-          preSaleId: preSaleId,
-          installmentName: "مبلغ کل تهاتر واحد مسکونی",
-          dueDate: newContact.createdAt || todayShamsi,
-          amount: totalP,
-          isPaid: false
-        });
+        // Requirement 3: Do NOT create any default installments on contract creation
       } else {
         existingPreSale.blockName = bu.blockName || existingPreSale.blockName;
         existingPreSale.saleAreaType = saleAreaType;
@@ -2726,7 +2785,7 @@ app.post("/api/imprests/expenses", (req, res) => {
     description: exp.description,
     materialCategory: exp.materialCategory || "سایر",
     attachmentUrl: exp.attachmentUrl,
-    status: exp.status || "approved",
+    status: exp.status || "pending",
     createdAt: todayShamsi,
     contactId: exp.contactId,
     personName: exp.personName,
@@ -2761,7 +2820,7 @@ app.post("/api/imprests/expenses", (req, res) => {
 
   db.imprestExpenses.push(newExpense);
 
-  // Also record a standard transaction in the company ledger!
+  // Also record a standard transaction in the company ledger (pending manager approval)!
   const supervisorContact = db.contacts.find(c => c.id === fund.contactId);
   const ledgerTxId = "t_im_exp_" + id;
   const imprestAccId = "a3";
@@ -2778,11 +2837,13 @@ app.post("/api/imprests/expenses", (req, res) => {
     personName: newExpense.personName || (supervisorContact ? supervisorContact.name : "تنخواه‌دار"),
     date: newExpense.expenseDate,
     description: `[هزینه تنخواه‌گردان] ${newExpense.description}`,
+    invoiceNumber: newExpense.invoiceNumber || "",
     isNonCash: false,
     attachmentName: exp.attachmentName,
     attachmentData: exp.attachmentData,
     paymentStatus: newExpense.paymentStatus,
-    payments: newExpense.payments || []
+    payments: newExpense.payments || [],
+    approvalStatus: "pending"
   };
   db.transactions.push(tx);
 
@@ -2983,7 +3044,6 @@ app.post("/api/presales", (req, res) => {
   // Update associated unit status, block, area breakdown, and price
   const unitIdx = db.units.findIndex(u => u.id === presale.unitId);
   const buyer = db.contacts.find(c => c.id === presale.contactId);
-  const downPaymentAmount = Math.round(totalPrice * 0.30);
   if (unitIdx >= 0) {
     db.units[unitIdx].status = "pre_sold";
     db.units[unitIdx].buyerName = buyer ? buyer.name : "پیش‌خریدار";
@@ -3000,68 +3060,18 @@ app.post("/api/presales", (req, res) => {
     db.units[unitIdx].area = computedArea;
     db.units[unitIdx].pricePerMeter = pricePerMeter;
     db.units[unitIdx].totalPrice = totalPrice;
-    db.units[unitIdx].downPayment = downPaymentAmount; // 30% contract downpayment
+    db.units[unitIdx].downPayment = 0;
   }
 
-  // Generate 7-stage standard installment schedule summing to 100% of totalPrice
-  const inst1 = downPaymentAmount; // 30%
-  const inst2 = Math.round(totalPrice * 0.10); // 10%
-  const inst3 = Math.round(totalPrice * 0.15); // 15%
-  const inst4 = Math.round(totalPrice * 0.15); // 15%
-  const inst5 = Math.round(totalPrice * 0.10); // 10%
-  const inst6 = Math.round(totalPrice * 0.10); // 10%
-  const inst7 = Math.max(0, totalPrice - (inst1 + inst2 + inst3 + inst4 + inst5 + inst6)); // 10% exact remainder
-
-  const installments: PreSaleInstallment[] = [
-    { id: "psi_1_" + Date.now(), preSaleId: id, installmentName: "پیش‌پرداخت (عقد قرارداد)", dueDate: contractDate, amount: inst1, isPaid: false },
-    { id: "psi_2_" + Date.now(), preSaleId: id, installmentName: "پایان پی‌ریزی و فونداسیون", dueDate: addShamsiMonths(contractDate, 2), amount: inst2, isPaid: false },
-    { id: "psi_3_" + Date.now(), preSaleId: id, installmentName: "پایان اسکلت و سازه", dueDate: addShamsiMonths(contractDate, 5), amount: inst3, isPaid: false },
-    { id: "psi_4_" + Date.now(), preSaleId: id, installmentName: "پایان سفت‌کاری و دیوارچینی", dueDate: addShamsiMonths(contractDate, 8), amount: inst4, isPaid: false },
-    { id: "psi_5_" + Date.now(), preSaleId: id, installmentName: "پایان نازک‌کاری و نصبیات", dueDate: addShamsiMonths(contractDate, 11), amount: inst5, isPaid: false },
-    { id: "psi_6_" + Date.now(), preSaleId: id, installmentName: "تحویل فیزیکی واحد مسکونی", dueDate: addShamsiMonths(contractDate, 13), amount: inst6, isPaid: false },
-    { id: "psi_7_" + Date.now(), preSaleId: id, installmentName: "تنظیم سند رسمی انتقال در دفترخانه", dueDate: addShamsiMonths(contractDate, 15), amount: inst7, isPaid: false }
-  ];
-
-  db.preSaleInstallments.push(...installments);
-
-  const downAccountId = presale.accountId || db.accounts[0]?.id || "a1";
-  // Also record downpayment transaction
-  const tx: Transaction = {
-    id: "t_ps_down_" + Date.now(),
-    companyId: getProjectCompanyId(db, newPreSale.projectId),
-    projectId: newPreSale.projectId,
-    type: "income",
-    category: "پیش‌فروش",
-    amount: downPaymentAmount,
-    accountId: downAccountId,
-    contactId: presale.contactId,
-    personName: buyer ? buyer.name : "پیش‌خریدار",
-    date: contractDate,
-    description: `پیش‌دریافت پیش‌پرداخت قرارداد پیش‌فروش واحد شماره ${db.units[unitIdx]?.unitNumber || ""}`,
-    isNonCash: false,
-    preSaleId: id,
-    paymentStatus: "paid",
-    payments: [{
-      id: "p_ps_down_" + Date.now(),
-      amount: downPaymentAmount,
-      date: contractDate,
-      accountId: downAccountId
-    }]
-  };
-  db.transactions.push(tx);
-
-  // Add downpayment to bank account balance
-  const acc = db.accounts.find(a => a.id === downAccountId);
-  if (acc) {
-    acc.balance += downPaymentAmount;
-  }
-
-  // Update buyer contact balance (remaining unpaid contract amount)
+  // Requirement 3 & 5: Do NOT create any default installments or automatic 30% payment on contract creation.
+  // Installments start empty ([]) and are entered by the user after the contract.
+  // The buyer becomes debtor for the full contract totalPrice.
+  const installments: PreSaleInstallment[] = [];
   if (buyer) {
-    buyer.balance = (buyer.balance || 0) + (totalPrice - downPaymentAmount);
+    buyer.balance = (buyer.balance || 0) + totalPrice;
   }
 
-  // Recalculate installments so downpayment registers immediately
+  // Recalculate installments and buyer debt
   recalculatePreSaleInstallments(db, id);
 
   writeDb(db);
@@ -3196,7 +3206,11 @@ app.post("/api/presales/update-area", (req, res) => {
 // 9f. Pay Pre-Sale Installment
 app.post("/api/presales/installments/pay", (req, res) => {
   const db = readDb();
-  const { installmentId, accountId, paidDate } = req.body;
+  const { installmentId, accountId, paidDate, sourceAccount, referenceNumber } = req.body;
+
+  if (!accountId) {
+    return res.status(400).json({ error: "انتخاب حساب دریافتی (بانک یا صندوق شرکت) الزامی است" });
+  }
 
   const instIdx = db.preSaleInstallments.findIndex(i => i.id === installmentId);
   if (instIdx < 0) {
@@ -3208,11 +3222,12 @@ app.post("/api/presales/installments/pay", (req, res) => {
     return res.status(400).json({ error: "این قسط قبلاً پرداخت شده است" });
   }
 
-  const remainingToPay = Math.max(0, inst.amount - (inst.paidAmount || 0));
+  const remainingToPay = Math.max(0, inst.amount - (inst.paidAmount || inst.amountPaid || 0));
   const payAmount = remainingToPay > 0 ? remainingToPay : inst.amount;
 
   inst.isPaid = true;
   inst.paidAmount = inst.amount;
+  inst.amountPaid = inst.amount;
   inst.paidDate = paidDate || getTodayShamsiServer();
 
   // Find associated pre-sale & buyer
@@ -3220,7 +3235,7 @@ app.post("/api/presales/installments/pay", (req, res) => {
   if (presale) {
     const buyer = db.contacts.find(c => c.id === presale.contactId);
     const unit = db.units.find(u => u.id === presale.unitId);
-    const targetAccId = accountId || db.accounts[0]?.id || "a1";
+    const targetAccId = accountId;
     
     // Register transaction with preSaleId so recalculatePreSaleInstallments recognizes it
     const tx: Transaction = {
@@ -3231,6 +3246,7 @@ app.post("/api/presales/installments/pay", (req, res) => {
       category: "پیش‌فروش",
       amount: payAmount,
       accountId: targetAccId,
+      sourceAccount: sourceAccount || (buyer ? `${buyer.name}${buyer.bankName ? ` (${buyer.bankName})` : ""}` : ""),
       contactId: presale.contactId,
       personName: buyer ? buyer.name : "پیش‌خریدار",
       date: inst.paidDate,
@@ -3238,11 +3254,14 @@ app.post("/api/presales/installments/pay", (req, res) => {
       isNonCash: false,
       preSaleId: presale.id,
       paymentStatus: "paid",
+      approvalStatus: "approved",
       payments: [{
         id: "p_psi_" + Date.now(),
         amount: payAmount,
         date: inst.paidDate,
-        accountId: targetAccId
+        accountId: targetAccId,
+        sourceAccount: sourceAccount || (buyer ? buyer.name : ""),
+        referenceNumber: referenceNumber || "تسویه قسط"
       }]
     };
     db.transactions.push(tx);
@@ -3290,12 +3309,7 @@ app.post("/api/presales/installments/add", (req, res) => {
 
   db.preSaleInstallments.push(newInstallment);
 
-  const buyer = db.contacts.find(c => c.id === preSale.contactId);
-  if (buyer) {
-    buyer.balance = (buyer.balance || 0) + Number(amount);
-  }
-
-  // Recalculate pre-sale installments
+  // Note: Do NOT add to buyer.balance here because buyer.balance already includes the full contract totalPrice!
   recalculatePreSaleInstallments(db, preSaleId);
 
   writeDb(db);
@@ -3322,17 +3336,10 @@ app.post("/api/presales/installments/delete", (req, res) => {
   }
 
   const presale = db.preSales.find(p => p.id === inst.preSaleId);
-  if (presale) {
-    const buyer = db.contacts.find(c => c.id === presale.contactId);
-    if (buyer) {
-      buyer.balance = Math.max(0, (buyer.balance || 0) - inst.amount);
-    }
-  }
-
   db.preSaleInstallments.splice(instIdx, 1);
 
   if (presale) {
-    // Recalculate pre-sale installments
+    // Recalculate pre-sale installments (buyer debt remains based on contract totalPrice - paid)
     recalculatePreSaleInstallments(db, presale.id);
   }
 
@@ -3360,20 +3367,12 @@ app.post("/api/presales/installments/edit", (req, res) => {
   }
 
   const presale = db.preSales.find(p => p.id === inst.preSaleId);
-  if (presale) {
-    const buyer = db.contacts.find(c => c.id === presale.contactId);
-    if (buyer) {
-      const difference = Number(amount) - inst.amount;
-      buyer.balance = Math.max(0, (buyer.balance || 0) + difference);
-    }
-  }
 
   inst.installmentName = installmentName || inst.installmentName;
   inst.dueDate = dueDate || inst.dueDate;
   inst.amount = Number(amount) || inst.amount;
 
   if (presale) {
-    // Recalculate pre-sale installments
     recalculatePreSaleInstallments(db, presale.id);
   }
 
@@ -3381,13 +3380,16 @@ app.post("/api/presales/installments/edit", (req, res) => {
   res.json({ status: "success", installment: inst });
 });
 
-// 9f-4. Register Pre-Sale Payment Document (ثبت سند دریافت قسط)
+// 9f-4. Register Pre-Sale Payment Document (ثبت سند دریافت قسط / آورده طرف قرارداد)
 app.post("/api/presales/payments/add", (req, res) => {
   const db = readDb();
-  const { preSaleId, amount, accountId, paidDate, referenceNumber, invoiceNumber, invoiceDescription, description } = req.body;
+  const { preSaleId, amount, accountId, sourceAccount, paidDate, referenceNumber, invoiceNumber, invoiceDescription, description } = req.body;
 
   if (!preSaleId || !amount || !paidDate) {
     return res.status(400).json({ error: "اطلاعات سند پرداخت ناقص است. تعیین مبلغ و تاریخ الزامی است." });
+  }
+  if (!accountId) {
+    return res.status(400).json({ error: "انتخاب حساب دریافتی (بانک یا صندوق شرکت) الزامی است." });
   }
 
   const preSale = db.preSales.find(p => p.id === preSaleId);
@@ -3397,11 +3399,11 @@ app.post("/api/presales/payments/add", (req, res) => {
 
   const buyer = db.contacts.find(c => c.id === preSale.contactId);
   const unit = db.units.find(u => u.id === preSale.unitId);
-  const resolvedAccountId = accountId || db.accounts[0]?.id || "a1";
+  const resolvedAccountId = accountId;
   const acc = db.accounts.find(a => a.id === resolvedAccountId);
 
   const payVal = Number(amount);
-  const finalDesc = description || invoiceDescription || `دریافت پرداختی پیش‌فروش واحد ${unit ? unit.unitNumber : ""} - شماره سند ${referenceNumber || ""}`;
+  const finalDesc = description || invoiceDescription || `دریافت پرداختی (آورده) قرارداد پیش‌فروش واحد ${unit ? unit.unitNumber : ""}${referenceNumber ? ` - شماره پیگیری ${referenceNumber}` : ""}`;
   // Register transaction
   const tx: Transaction = {
     id: "t_ps_pay_" + Date.now(),
@@ -3411,6 +3413,7 @@ app.post("/api/presales/payments/add", (req, res) => {
     category: "پیش‌فروش",
     amount: payVal,
     accountId: resolvedAccountId,
+    sourceAccount: sourceAccount || (buyer ? `${buyer.name}${buyer.bankName ? ` (${buyer.bankName})` : ""}` : ""),
     contactId: preSale.contactId,
     personName: buyer ? buyer.name : "پیش‌خریدار",
     date: paidDate,
@@ -3419,11 +3422,13 @@ app.post("/api/presales/payments/add", (req, res) => {
     isNonCash: false,
     preSaleId,
     paymentStatus: "paid",
+    approvalStatus: "approved",
     payments: [{
       id: "p_psp_" + Date.now(),
       amount: payVal,
       date: paidDate,
       accountId: resolvedAccountId,
+      sourceAccount: sourceAccount || (buyer ? buyer.name : ""),
       referenceNumber,
       invoiceNumber: invoiceNumber || "",
       invoiceDescription: invoiceDescription || finalDesc,
@@ -3442,7 +3447,7 @@ app.post("/api/presales/payments/add", (req, res) => {
     buyer.balance = Math.max(0, (buyer.balance || 0) - payVal);
   }
 
-  // Recalculate installments
+  // Recalculate installments and buyer balance
   recalculatePreSaleInstallments(db, preSaleId);
 
   writeDb(db);

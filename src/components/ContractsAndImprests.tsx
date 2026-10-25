@@ -33,10 +33,13 @@ import {
   Search,
   Coins,
   ShieldCheck,
-  Building
+  Building,
+  Printer,
+  SlidersHorizontal
 } from "lucide-react";
 import { DatabaseSchema, Project, Account, UnitItem, Contact as DBContact, ImprestExpense } from "../types";
 import SearchableCombobox, { ComboboxOption } from "./SearchableCombobox";
+import { printStructuredReport } from "../utils/printReport";
 
 // Keep inside module for exact matches
 interface Contact {
@@ -317,9 +320,35 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   // Pre-sale contract payment forms states
   const [presalePayAmount, setPresalePayAmount] = useState("");
   const [presalePayAccountId, setPresalePayAccountId] = useState("");
+  const [presalePaySourceAccount, setPresalePaySourceAccount] = useState("");
   const [presalePayDate, setPresalePayDate] = useState(() => getTodayShamsiString());
   const [presalePayRef, setPresalePayRef] = useState("");
   const [presalePayDesc, setPresalePayDesc] = useState("");
+  const [instPayModal, setInstPayModal] = useState<PreSaleInstallment | null>(null);
+  const [instPayAccountId, setInstPayAccountId] = useState("");
+  const [instPaySourceAccount, setInstPaySourceAccount] = useState("");
+  const [instPayDate, setInstPayDate] = useState(() => getTodayShamsiString());
+  const [instPayRef, setInstPayRef] = useState("");
+
+  // Search & Advanced Search states across all 4 tabs
+  const [contactSearch, setContactSearch] = useState("");
+  const [showContactAdv, setShowContactAdv] = useState(false);
+  const [contactRoleFilter, setContactRoleFilter] = useState("all");
+  const [contactBalanceFilter, setContactBalanceFilter] = useState("all");
+
+  const [imprestSearch, setImprestSearch] = useState("");
+  const [showImprestAdv, setShowImprestAdv] = useState(false);
+  const [imprestProjectFilter, setImprestProjectFilter] = useState("all");
+  const [imprestPaymentFilter, setImprestPaymentFilter] = useState("all");
+
+  const [presaleSearch, setPresaleSearch] = useState("");
+  const [showPresaleAdv, setShowPresaleAdv] = useState(false);
+  const [presaleProjectFilter, setPresaleProjectFilter] = useState("all");
+  const [presaleBlockFilter, setPresaleBlockFilter] = useState("all");
+
+  const [alertSearch, setAlertSearch] = useState("");
+  const [showAlertAdv, setShowAlertAdv] = useState(false);
+  const [alertTypeFilter, setAlertTypeFilter] = useState("all");
 
   // States for exact area deed settlement
   const [exactAreaInput, setExactAreaInput] = useState("");
@@ -385,6 +414,16 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   const handleAddInstallment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPreSaleId || !newInstForm.installmentName || !newInstForm.dueDate || !newInstForm.amount) return;
+    const currentContract = (db.preSales || []).find(ps => ps.id === selectedPreSaleId);
+    const existingSum = (db.preSaleInstallments || []).filter(i => i.preSaleId === selectedPreSaleId).reduce((s, i) => s + Number(i.amount || 0), 0);
+    const nextSum = existingSum + Number(newInstForm.amount);
+    if (currentContract && nextSum > currentContract.totalPrice) {
+      const proceed = window.confirm(
+        `⚠️ هشدار: با ثبت این قسط، جمع کل اقساط ثبت‌شده (${formatRial(nextSum)}) از مبلغ کل قرارداد (${formatRial(currentContract.totalPrice)}) بیشتر خواهد شد!\nآیا همچنان مایل به ثبت این قسط هستید؟`
+      );
+      if (!proceed) return;
+    }
+
     setIsSubmitting(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -957,7 +996,10 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
       });
       const data = await response.json();
       if (data.status === "success") {
-        setSuccessMsg("قرارداد پیش‌فروش با موفقیت ثبت و جدول پرداخت ۷ مرحله‌ای صادر شد.");
+        setSuccessMsg("قرارداد پیش‌فروش ثبت شد و طرف قرارداد به اندازه کل مبلغ قرارداد بدهکار گردید. اکنون می‌توانید اقساط یا واریزی‌ها را وارد نمایید.");
+        if (data.preSale?.id) {
+          setSelectedPreSaleId(data.preSale.id);
+        }
         setPresaleForm({
           projectId: projects[0]?.id || "p1",
           contactId: "",
@@ -983,7 +1025,13 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
     }
   };
 
-  const handlePayInstallment = async (installmentId: string) => {
+  const handlePayInstallment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!instPayModal) return;
+    if (!instPayAccountId) {
+      setErrorMsg("انتخاب حساب دریافتی (بانک یا صندوق شرکت) برای ثبت دریافتی قسط الزامی است.");
+      return;
+    }
     setIsSubmitting(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -993,14 +1041,20 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          installmentId,
-          accountId: "a1", // Default account Melli
-          paidDate: getTodayShamsiString()
+          installmentId: instPayModal.id,
+          accountId: instPayAccountId,
+          sourceAccount: instPaySourceAccount,
+          referenceNumber: instPayRef,
+          paidDate: instPayDate || getTodayShamsiString()
         })
       });
       const data = await response.json();
       if (data.status === "success") {
-        setSuccessMsg("قسط مرحله با موفقیت تسویه و سند دریافتی صادر شد.");
+        setSuccessMsg("قسط با موفقیت وصول شد، به حساب دریافتی شرکت واریز گردید و از بدهی طرف قرارداد کسر شد.");
+        setInstPayModal(null);
+        setInstPayAccountId("");
+        setInstPaySourceAccount("");
+        setInstPayRef("");
         await onRefresh();
       } else {
         setErrorMsg(data.error || "خطا در ثبت پرداخت قسط");
@@ -1015,8 +1069,12 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   const handleRegisterPresalePayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPreSaleId) return;
-    if (!presalePayAmount || !presalePayAccountId || !presalePayDate) {
-      setErrorMsg("لطفاً کلیه فیلدهای ستاره‌دار الزامی را تکمیل کنید.");
+    if (!presalePayAmount || Number(presalePayAmount) <= 0) {
+      setErrorMsg("لطفاً مبلغ دریافتی (آورده طرف قرارداد) را وارد کنید.");
+      return;
+    }
+    if (!presalePayAccountId) {
+      setErrorMsg("انتخاب حساب دریافتی شرکت (بانک یا صندوق مقصد) اجباری است تا مشخص شود مبلغ به چه حسابی واریز شده است.");
       return;
     }
 
@@ -1032,15 +1090,18 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           preSaleId: selectedPreSaleId,
           amount: Number(presalePayAmount),
           accountId: presalePayAccountId,
-          paidDate: presalePayDate,
+          sourceAccount: presalePaySourceAccount,
+          paidDate: presalePayDate || getTodayShamsiString(),
           referenceNumber: presalePayRef,
           description: presalePayDesc
         })
       });
       const data = await response.json();
       if (data.status === "success") {
-        setSuccessMsg("سند دریافت با موفقیت ثبت شد و اقساط مجدداً زمان‌بندی و تسویه شدند.");
+        setSuccessMsg("دریافتی جدید در آورده طرف قرارداد ثبت شد و از بدهی کل قرارداد کسر گردید.");
         setPresalePayAmount("");
+        setPresalePayAccountId("");
+        setPresalePaySourceAccount("");
         setPresalePayRef("");
         setPresalePayDesc("");
         await onRefresh();
@@ -1079,6 +1140,99 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
   const presalesList = db.preSales || [];
   const installmentsList = db.preSaleInstallments || [];
   const alertsLogList = db.alertsLog || [];
+  const transactionsList = db.transactions || [];
+  const accountsList = db.accounts || [];
+
+  const getContactAccountingSummary = (c: any) => {
+    const buyerContracts = presalesList.filter(ps => ps.contactId === c.id);
+    const hasPreSaleContract = c.role === "pre_buyer" || buyerContracts.length > 0;
+    if (hasPreSaleContract && buyerContracts.length > 0) {
+      const preSaleIds = new Set(buyerContracts.map(ps => ps.id));
+      const totalContractAmount = buyerContracts.reduce((s, ps) => s + Number(ps.totalPrice || 0), 0);
+      const totalPaid = transactionsList
+        .filter(tx => tx.type === "income" && (tx.contactId === c.id || (tx.preSaleId && preSaleIds.has(tx.preSaleId))))
+        .reduce((s, tx) => s + Number(tx.amount || 0), 0);
+      const netDebt = totalContractAmount - totalPaid;
+      return {
+        isPreBuyer: true,
+        totalContractAmount,
+        totalPaid,
+        netDebt, // > 0 means debtor (بدهکار), < 0 means creditor (طلبکار/اضافه پرداخت)
+        isDebtor: netDebt > 0,
+        isCreditor: netDebt < 0,
+        displayAmount: Math.abs(netDebt)
+      };
+    }
+    const bal = Number(c.balance || 0);
+    return {
+      isPreBuyer: c.role === "pre_buyer",
+      totalContractAmount: 0,
+      totalPaid: 0,
+      netDebt: c.role === "pre_buyer" ? bal : -bal,
+      isDebtor: c.role === "pre_buyer" ? bal > 0 : bal < 0,
+      isCreditor: c.role === "pre_buyer" ? bal < 0 : bal > 0,
+      displayAmount: Math.abs(bal)
+    };
+  };
+
+  const filteredContacts = contactsList.filter(c => {
+    if (contactRoleFilter !== "all" && c.role !== contactRoleFilter) return false;
+    const summary = getContactAccountingSummary(c);
+    if (contactBalanceFilter === "debtor" && !summary.isDebtor) return false;
+    if (contactBalanceFilter === "creditor" && !summary.isCreditor) return false;
+    if (contactBalanceFilter === "settled" && summary.displayAmount !== 0) return false;
+    if (contactSearch.trim()) {
+      const q = toEnglishDigits(contactSearch).trim().toLowerCase();
+      const matchName = (c.name || "").toLowerCase().includes(q);
+      const matchPhone = toEnglishDigits(c.phone || "").toLowerCase().includes(q);
+      const matchNat = toEnglishDigits(c.nationalId || "").toLowerCase().includes(q);
+      const matchJob = (c.jobCategory || "").toLowerCase().includes(q);
+      if (!matchName && !matchPhone && !matchNat && !matchJob) return false;
+    }
+    return true;
+  });
+
+  const handlePrintContacts = (mode: "after_filter" | "before_filter") => {
+    const source = mode === "after_filter" ? filteredContacts : contactsList;
+    printStructuredReport({
+      title: "گزارش طرف حساب‌ها و وضعیت بدهی / طلبکاری",
+      subtitle: "فهرست اشخاص حقیقی، حقوقی، پیمانکاران و پیش‌خریداران",
+      mode,
+      filterDescription: mode === "after_filter"
+        ? `جستجو: ${contactSearch || "همه"} | نقش: ${contactRoleFilter === "all" ? "همه" : contactRoleFilter} | وضعیت حساب: ${contactBalanceFilter === "all" ? "همه" : contactBalanceFilter}`
+        : undefined,
+      columns: [
+        { header: "ردیف", accessor: r => r.idx, align: "center" },
+        { header: "نام طرف حساب", accessor: r => r.name },
+        { header: "نقش", accessor: r => r.roleLabel, align: "center" },
+        { header: "شماره تماس", accessor: r => r.phone, align: "center" },
+        { header: "کد ملی", accessor: r => r.nationalId, align: "center" },
+        { header: "کل قرارداد / آورده", accessor: r => r.contractInfo, align: "center" },
+        { header: "وضعیت نهایی حساب (ریال)", accessor: r => r.statusText, align: "left" },
+      ],
+      rows: source.map((c, idx) => {
+        const s = getContactAccountingSummary(c);
+        const roleLabel = c.role === "pre_buyer" ? "پیش‌خریدار" : c.role === "supplier" ? "تأمین‌کننده" : c.role === "subcontractor" ? "پیمانکار" : c.role === "imprest_holder" ? "تنخواه‌دار" : c.role;
+        const statusText = s.displayAmount === 0
+          ? "تسویه (۰ ریال)"
+          : s.isDebtor
+            ? `${s.displayAmount.toLocaleString("fa-IR")} ریال (بدهکار)`
+            : `${s.displayAmount.toLocaleString("fa-IR")} ریال (طلبکار)`;
+        return {
+          idx: (idx + 1).toLocaleString("fa-IR"),
+          name: c.name,
+          roleLabel,
+          phone: c.phone || "—",
+          nationalId: c.nationalId || "—",
+          contractInfo: s.totalContractAmount > 0 ? `قرارداد: ${s.totalContractAmount.toLocaleString("fa-IR")} | پرداختی: ${s.totalPaid.toLocaleString("fa-IR")}` : "—",
+          statusText
+        };
+      }),
+      summaryItems: [
+        { label: "تعداد طرف حساب‌ها", value: `${source.length.toLocaleString("fa-IR")} نفر` }
+      ]
+    });
+  };
 
   return (
     <div className="space-y-6" dir="rtl">
@@ -1337,8 +1491,104 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
           </div>
 
            {/* Counterparties list table */}
-          <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm lg:col-span-2">
-            <h3 className="text-sm font-bold text-slate-900 mb-4">لیست تفصیلی طرف حساب‌های حقیقی و حقوقی</h3>
+          <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm lg:col-span-2 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">لیست تفصیلی طرف حساب‌های حقیقی و حقوقی</h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  نمایش {filteredContacts.length.toLocaleString("fa-IR")} از {contactsList.length.toLocaleString("fa-IR")} طرف حساب
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handlePrintContacts("after_filter")}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ نتایج فیلتر شده (بعد از فیلتر)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePrintContacts("before_filter")}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ کل اطلاعات (قبل از فیلتر)
+                </button>
+              </div>
+            </div>
+
+            {/* Search & Advanced Search Bar for Contacts */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={contactSearch}
+                    onChange={e => setContactSearch(e.target.value)}
+                    placeholder="جستجو بر اساس نام، شماره تماس، کد ملی یا صنف کاری..."
+                    className="w-full bg-white border border-slate-200 rounded-xl pr-9 pl-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowContactAdv(!showContactAdv)}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border cursor-pointer transition-all ${
+                    showContactAdv ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-white border-slate-200 text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  جستجوی پیشرفته
+                </button>
+              </div>
+              {showContactAdv && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-200/80">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">فیلتر نقش طرف حساب</label>
+                    <select
+                      value={contactRoleFilter}
+                      onChange={e => setContactRoleFilter(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                    >
+                      <option value="all">همه نقش‌ها</option>
+                      <option value="pre_buyer">پیش‌خریدار واحد مسکونی</option>
+                      <option value="supplier">تأمین‌کننده مصالح</option>
+                      <option value="subcontractor">پیمانکار اجرایی</option>
+                      <option value="imprest_holder">تنخواه‌دار کارگاه</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">فیلتر وضعیت بدهی / طلبکاری</label>
+                    <select
+                      value={contactBalanceFilter}
+                      onChange={e => setContactBalanceFilter(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                    >
+                      <option value="all">همه وضعیت‌ها</option>
+                      <option value="debtor">فقط بدهکاران (بدهکار به شرکت)</option>
+                      <option value="creditor">فقط طلبکاران (بستانکار از شرکت)</option>
+                      <option value="settled">تسویه شده (بی‌حساب)</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setContactSearch("");
+                        setContactRoleFilter("all");
+                        setContactBalanceFilter("all");
+                      }}
+                      className="w-full py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-bold cursor-pointer"
+                    >
+                      پاک کردن فیلترها
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-xs text-right border-collapse">
                 <thead>
@@ -1352,9 +1602,9 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {contactsList.map(c => {
-                    const isCreditor = c.balance > 0;
-                    const balanceAbs = Math.abs(c.balance);
+                  {filteredContacts.map(c => {
+                    const summary = getContactAccountingSummary(c);
+                    const balanceAbs = summary.displayAmount;
                     return (
                       <tr key={c.id} className="hover:bg-slate-50/50">
                         <td className="p-3">
@@ -1376,18 +1626,32 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                         </td>
                         <td className="p-3 text-center font-mono text-slate-600">{c.phone || "-"}</td>
                         <td className="p-3 text-left font-extrabold font-mono">
-                          {c.balance === 0 ? (
-                            <span className="text-slate-400">بش‌حساب بی‌حساب</span>
-                          ) : isCreditor ? (
-                            <span className="text-emerald-600 flex items-center justify-end gap-1">
-                              {formatRial(balanceAbs)} + (طلبکار)
-                              <ArrowUpRight className="w-3.5 h-3.5" />
-                            </span>
+                          {balanceAbs === 0 ? (
+                            <span className="text-slate-400">تسویه شده (بی‌حساب)</span>
+                          ) : summary.isDebtor ? (
+                            <div className="flex flex-col items-end">
+                              <span className="text-rose-600 flex items-center justify-end gap-1">
+                                {formatRial(balanceAbs)} - ({summary.totalContractAmount > 0 ? "بدهکار قرارداد" : "بدهکار"})
+                                <ArrowDownLeft className="w-3.5 h-3.5" />
+                              </span>
+                              {summary.totalContractAmount > 0 && (
+                                <span className="text-[9px] text-slate-500 font-normal mt-0.5">
+                                  کل قرارداد: {formatRial(summary.totalContractAmount)} | پرداختی (آورده): {formatRial(summary.totalPaid)}
+                                </span>
+                              )}
+                            </div>
                           ) : (
-                            <span className="text-rose-600 flex items-center justify-end gap-1">
-                              {formatRial(balanceAbs)} - (بدهکار)
-                              <ArrowDownLeft className="w-3.5 h-3.5" />
-                            </span>
+                            <div className="flex flex-col items-end">
+                              <span className="text-emerald-600 flex items-center justify-end gap-1">
+                                {formatRial(balanceAbs)} + (طلبکار / بستانکار)
+                                <ArrowUpRight className="w-3.5 h-3.5" />
+                              </span>
+                              {summary.totalContractAmount > 0 && (
+                                <span className="text-[9px] text-slate-500 font-normal mt-0.5">
+                                  کل قرارداد: {formatRial(summary.totalContractAmount)} | پرداختی: {formatRial(summary.totalPaid)}
+                                </span>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="p-3 text-center">
@@ -1396,7 +1660,7 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                               onClick={() => handleSendSMS(
                                 "check",
                                 c.phone,
-                                `جناب آقای/سرکار خانم ${c.name}، خواهشمند است جهت رفع مغایرت حساب خود به مبلغ ${formatRial(balanceAbs)} با بخش حسابداری تماس حاصل فرمایید.`,
+                                `جناب آقای/سرکار خانم ${c.name}، مانده بدهی حساب شما به مبلغ ${formatRial(balanceAbs)} می‌باشد. خواهشمند است با بخش حسابداری تماس حاصل فرمایید.`,
                                 c.id
                               )}
                               className="p-1 hover:bg-indigo-50 text-indigo-600 rounded-lg cursor-pointer transition-colors"
@@ -1829,140 +2093,298 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
             </div>
 
             {/* Imprest Expenses History List */}
-            <div className="border-t border-slate-100 pt-6">
-              <h3 className="text-sm font-bold text-slate-900 mb-4">فهرست آخرین اقلام هزینه و فاکتورهای تنخواه‌داران</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-right border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
-                      <th className="p-2.5 text-center">ردیف</th>
-                      <th className="p-2.5 text-center">شماره فاکتور</th>
-                      <th className="p-2.5">ناظر تنخواه‌دار</th>
-                      <th className="p-2.5">طرف حساب فروشنده</th>
-                      <th className="p-2.5">شرح فاکتور</th>
-                      <th className="p-2.5 text-center">تاریخ</th>
-                      <th className="p-2.5">دسته‌بندی</th>
-                      <th className="p-2.5 text-left">مبلغ کل هزینه</th>
-                      <th className="p-2.5 text-center">وضعیت پرداخت</th>
-                      <th className="p-2.5 text-center">عملیات</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {db.imprestExpenses?.length === 0 ? (
-                      <tr>
-                        <td colSpan={10} className="text-center py-8 text-slate-400 font-light text-sm">هیچ هزینه تنخواهی یافت نشد.</td>
-                      </tr>
-                    ) : (
-                      db.imprestExpenses?.map((ie, idx) => {
-                        const fund = imprestList.find(f => f.id === ie.imprestId);
-                        const supervisor = fund ? contactsList.find(c => c.id === fund.contactId) : null;
-                        const vendor = contactsList.find(c => c.id === ie.contactId);
-                        
-                        const totalPaid = ie.payments?.reduce((sum, p) => sum + p.amount, 0) || (ie.paymentStatus === "paid" ? ie.amount : 0);
-                        const remaining = Math.max(0, ie.amount - totalPaid);
-                        
-                        return (
-                          <tr key={ie.id} className="hover:bg-slate-50/50">
-                            <td className="p-2.5 text-center font-mono font-bold text-slate-500">{(idx + 1).toLocaleString("fa-IR")}</td>
-                            <td className="p-2.5 text-center font-mono font-bold text-indigo-700">{ie.invoiceNumber || "—"}</td>
-                            <td className="p-2.5">
-                              <span className="font-bold text-slate-800 block">{supervisor?.name || "ناظر کارگاه"}</span>
-                              <span className="text-[9px] text-slate-400 font-light block">پروژه {projects.find(p => p.id === fund?.projectId)?.name || "عمومی"}</span>
-                            </td>
-                            <td className="p-2.5">
-                              <span className="font-extrabold text-slate-900 block">{ie.personName || vendor?.name || "بازار/سایر"}</span>
-                              {ie.stage && (
-                                <span className="text-[9px] text-indigo-600 font-medium block">مرحله: {ie.stage}</span>
-                              )}
-                            </td>
-                            <td className="p-2.5 text-slate-700">
-                              <span className="block truncate max-w-[160px]" title={ie.description}>
-                                {ie.description}
-                              </span>
-                              {ie.attachmentName && (
-                                <span className="inline-flex items-center gap-1 text-[9px] text-emerald-600 bg-emerald-50 px-1 rounded mt-0.5 font-bold">
-                                  <Paperclip className="w-2.5 h-2.5" />
-                                  فاکتور پیوست شده
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-2.5 text-center text-slate-500 font-mono">{ie.expenseDate}</td>
-                            <td className="p-2.5">
-                              <span className="px-2 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600">
-                                {ie.materialCategory || "سایر"}
-                              </span>
-                            </td>
-                            <td className="p-2.5 text-left font-extrabold text-rose-600 font-mono">
-                              {formatRial(ie.amount)}
-                            </td>
-                            <td className="p-2.5 text-center">
-                              {ie.paymentStatus === "paid" ? (
-                                <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700">
-                                  تسویه کامل
-                                </span>
-                              ) : ie.paymentStatus === "unpaid" ? (
-                                <div className="flex flex-col items-center gap-1">
-                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-rose-50 text-rose-700">
-                                    نسیه پرداخت‌نشده
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedExpenseForPay(ie)}
-                                    className="text-[9px] font-bold text-indigo-600 hover:text-indigo-850 underline cursor-pointer"
-                                  >
-                                    ثبت پرداخت
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex flex-col items-center gap-1">
-                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 text-amber-700">
-                                    پرداخت جزئی (مانده: {formatRial(remaining)})
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedExpenseForPay(ie)}
-                                    className="text-[9px] font-bold text-indigo-600 hover:text-indigo-850 underline cursor-pointer"
-                                  >
-                                    پرداخت قسط
-                                  </button>
-                                </div>
-                              )}
-                            </td>
-                            <td className="p-2.5 text-center">
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  if (!window.confirm("آیا از حذف این فاکتور تنخواه اطمینان دارید؟")) return;
-                                  try {
-                                    const res = await fetch(getApiUrl("/api/imprests/expenses/delete"), {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ id: ie.id })
-                                    });
-                                    const data = await res.json();
-                                    if (data.status === "success") {
-                                      await onRefresh();
-                                    } else {
-                                      alert(data.error || "خطا در حذف فاکتور تنخواه");
-                                    }
-                                  } catch (err: any) {
-                                    alert("خطا: " + err.message);
-                                  }
-                                }}
-                                className="p-1 hover:bg-rose-50 text-rose-400 hover:text-rose-600 rounded-lg cursor-pointer transition-colors"
-                                title="حذف فاکتور تنخواه"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
+            {(() => {
+              const allImprestExpenses = db.imprestExpenses || [];
+              const filteredImprestExpenses = allImprestExpenses.filter(ie => {
+                const fund = imprestList.find(f => f.id === ie.imprestId);
+                if (imprestProjectFilter !== "all" && fund?.projectId !== imprestProjectFilter) return false;
+                if (imprestPaymentFilter !== "all" && ie.paymentStatus !== imprestPaymentFilter) return false;
+                if (imprestSearch.trim()) {
+                  const q = toEnglishDigits(imprestSearch).trim().toLowerCase();
+                  const supervisor = fund ? contactsList.find(c => c.id === fund.contactId) : null;
+                  const vendor = contactsList.find(c => c.id === ie.contactId);
+                  const matchDesc = (ie.description || "").toLowerCase().includes(q);
+                  const matchInv = toEnglishDigits(ie.invoiceNumber || "").toLowerCase().includes(q);
+                  const matchSup = (supervisor?.name || "").toLowerCase().includes(q);
+                  const matchVen = (ie.personName || vendor?.name || "").toLowerCase().includes(q);
+                  const matchCat = (ie.materialCategory || "").toLowerCase().includes(q);
+                  if (!matchDesc && !matchInv && !matchSup && !matchVen && !matchCat) return false;
+                }
+                return true;
+              });
+
+              const handlePrintImprestExpenses = (mode: "after_filter" | "before_filter") => {
+                const source = mode === "after_filter" ? filteredImprestExpenses : allImprestExpenses;
+                printStructuredReport({
+                  title: "گزارش فاکتورها و هزینه‌های تنخواه‌داران کارگاه",
+                  subtitle: "فهرست ریز مخارج ثبت شده از صندوق‌های تنخواه",
+                  mode,
+                  filterDescription: mode === "after_filter"
+                    ? `جستجو: ${imprestSearch || "همه"} | پروژه: ${imprestProjectFilter === "all" ? "همه" : (projects.find(p => p.id === imprestProjectFilter)?.name || imprestProjectFilter)} | وضعیت پرداخت: ${imprestPaymentFilter}`
+                    : undefined,
+                  columns: [
+                    { header: "ردیف", accessor: r => r.idx, align: "center" },
+                    { header: "شماره فاکتور", accessor: r => r.invoiceNumber, align: "center" },
+                    { header: "ناظر تنخواه‌دار", accessor: r => r.supervisor },
+                    { header: "فروشنده / طرف حساب", accessor: r => r.vendor },
+                    { header: "شرح فاکتور", accessor: r => r.description },
+                    { header: "تاریخ", accessor: r => r.date, align: "center" },
+                    { header: "مبلغ فاکتور (ریال)", accessor: r => r.amount, align: "left" },
+                    { header: "وضعیت", accessor: r => r.status, align: "center" },
+                  ],
+                  rows: source.map((ie, idx) => {
+                    const fund = imprestList.find(f => f.id === ie.imprestId);
+                    const supervisor = fund ? contactsList.find(c => c.id === fund.contactId) : null;
+                    const vendor = contactsList.find(c => c.id === ie.contactId);
+                    return {
+                      idx: (idx + 1).toLocaleString("fa-IR"),
+                      invoiceNumber: ie.invoiceNumber || "—",
+                      supervisor: supervisor?.name || "ناظر کارگاه",
+                      vendor: ie.personName || vendor?.name || "بازار",
+                      description: ie.description,
+                      date: ie.expenseDate,
+                      amount: Number(ie.amount || 0).toLocaleString("fa-IR"),
+                      status: ie.paymentStatus === "paid" ? "تسویه کامل" : ie.paymentStatus === "unpaid" ? "نسیه" : "پرداخت جزئی"
+                    };
+                  }),
+                  summaryItems: [
+                    { label: "تعداد فاکتورها", value: `${source.length.toLocaleString("fa-IR")} فقره` },
+                    { label: "جمع کل فاکتورهای تنخواه", value: `${source.reduce((s, x) => s + Number(x.amount || 0), 0).toLocaleString("fa-IR")} ریال` }
+                  ]
+                });
+              };
+
+              return (
+                <div className="border-t border-slate-100 pt-6 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">فهرست آخرین اقلام هزینه و فاکتورهای تنخواه‌داران</h3>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        نمایش {filteredImprestExpenses.length.toLocaleString("fa-IR")} از {allImprestExpenses.length.toLocaleString("fa-IR")} فاکتور تنخواه
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handlePrintImprestExpenses("after_filter")}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        چاپ نتایج فیلتر شده (بعد از فیلتر)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handlePrintImprestExpenses("before_filter")}
+                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        چاپ کل اطلاعات (قبل از فیلتر)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={imprestSearch}
+                          onChange={e => setImprestSearch(e.target.value)}
+                          placeholder="جستجو بر اساس شماره فاکتور، شرح هزینه، ناظر یا فروشنده..."
+                          className="w-full bg-white border border-slate-200 rounded-xl pr-9 pl-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowImprestAdv(!showImprestAdv)}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border cursor-pointer ${
+                          showImprestAdv ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-white border-slate-200 text-slate-700"
+                        }`}
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        جستجوی پیشرفته
+                      </button>
+                    </div>
+                    {showImprestAdv && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-200/80">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-500 block mb-1">پروژه</label>
+                          <select
+                            value={imprestProjectFilter}
+                            onChange={e => setImprestProjectFilter(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="all">همه پروژه‌ها</option>
+                            {projects.map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-500 block mb-1">وضعیت پرداخت</label>
+                          <select
+                            value={imprestPaymentFilter}
+                            onChange={e => setImprestPaymentFilter(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="all">همه وضعیت‌ها</option>
+                            <option value="paid">تسویه کامل</option>
+                            <option value="partially_paid">پرداخت جزئی</option>
+                            <option value="unpaid">نسیه پرداخت‌نشده</option>
+                          </select>
+                        </div>
+                        <div className="flex items-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImprestSearch("");
+                              setImprestProjectFilter("all");
+                              setImprestPaymentFilter("all");
+                            }}
+                            className="w-full py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-bold cursor-pointer"
+                          >
+                            پاک کردن فیلترها
+                          </button>
+                        </div>
+                      </div>
                     )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-right border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
+                          <th className="p-2.5 text-center">ردیف</th>
+                          <th className="p-2.5 text-center">شماره فاکتور</th>
+                          <th className="p-2.5">ناظر تنخواه‌دار</th>
+                          <th className="p-2.5">طرف حساب فروشنده</th>
+                          <th className="p-2.5">شرح فاکتور</th>
+                          <th className="p-2.5 text-center">تاریخ</th>
+                          <th className="p-2.5">دسته‌بندی</th>
+                          <th className="p-2.5 text-left">مبلغ کل هزینه</th>
+                          <th className="p-2.5 text-center">وضعیت پرداخت</th>
+                          <th className="p-2.5 text-center">عملیات</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredImprestExpenses.length === 0 ? (
+                          <tr>
+                            <td colSpan={10} className="text-center py-8 text-slate-400 font-light text-sm">هیچ هزینه تنخواهی یافت نشد.</td>
+                          </tr>
+                        ) : (
+                          filteredImprestExpenses.map((ie, idx) => {
+                            const fund = imprestList.find(f => f.id === ie.imprestId);
+                            const supervisor = fund ? contactsList.find(c => c.id === fund.contactId) : null;
+                            const vendor = contactsList.find(c => c.id === ie.contactId);
+                            
+                            const totalPaid = ie.payments?.reduce((sum, p) => sum + p.amount, 0) || (ie.paymentStatus === "paid" ? ie.amount : 0);
+                            const remaining = Math.max(0, ie.amount - totalPaid);
+                            
+                            return (
+                              <tr key={ie.id} className="hover:bg-slate-50/50">
+                                <td className="p-2.5 text-center font-mono font-bold text-slate-500">{(idx + 1).toLocaleString("fa-IR")}</td>
+                                <td className="p-2.5 text-center font-mono font-bold text-indigo-700">{ie.invoiceNumber || "—"}</td>
+                                <td className="p-2.5">
+                                  <span className="font-bold text-slate-800 block">{supervisor?.name || "ناظر کارگاه"}</span>
+                                  <span className="text-[9px] text-slate-400 font-light block">پروژه {projects.find(p => p.id === fund?.projectId)?.name || "عمومی"}</span>
+                                </td>
+                                <td className="p-2.5">
+                                  <span className="font-extrabold text-slate-900 block">{ie.personName || vendor?.name || "بازار/سایر"}</span>
+                                  {ie.stage && (
+                                    <span className="text-[9px] text-indigo-600 font-medium block">مرحله: {ie.stage}</span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-slate-700">
+                                  <span className="block truncate max-w-[160px]" title={ie.description}>
+                                    {ie.description}
+                                  </span>
+                                  {ie.attachmentName && (
+                                    <span className="inline-flex items-center gap-1 text-[9px] text-emerald-600 bg-emerald-50 px-1 rounded mt-0.5 font-bold">
+                                      <Paperclip className="w-2.5 h-2.5" />
+                                      فاکتور پیوست شده
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-center text-slate-500 font-mono">{ie.expenseDate}</td>
+                                <td className="p-2.5">
+                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600">
+                                    {ie.materialCategory || "سایر"}
+                                  </span>
+                                </td>
+                                <td className="p-2.5 text-left font-extrabold text-rose-600 font-mono">
+                                  {formatRial(ie.amount)}
+                                </td>
+                                <td className="p-2.5 text-center">
+                                  {ie.paymentStatus === "paid" ? (
+                                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700">
+                                      تسویه کامل
+                                    </span>
+                                  ) : ie.paymentStatus === "unpaid" ? (
+                                    <div className="flex flex-col items-center gap-1">
+                                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-rose-50 text-rose-700">
+                                        نسیه پرداخت‌نشده
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedExpenseForPay(ie)}
+                                        className="text-[9px] font-bold text-indigo-600 hover:text-indigo-850 underline cursor-pointer"
+                                      >
+                                        ثبت پرداخت
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex flex-col items-center gap-1">
+                                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 text-amber-700">
+                                        پرداخت جزئی (مانده: {formatRial(remaining)})
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setSelectedExpenseForPay(ie)}
+                                        className="text-[9px] font-bold text-indigo-600 hover:text-indigo-850 underline cursor-pointer"
+                                      >
+                                        پرداخت قسط
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      if (!window.confirm("آیا از حذف این فاکتور تنخواه اطمینان دارید؟")) return;
+                                      try {
+                                        const res = await fetch(getApiUrl("/api/imprests/expenses/delete"), {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ id: ie.id })
+                                        });
+                                        const data = await res.json();
+                                        if (data.status === "success") {
+                                          await onRefresh();
+                                        } else {
+                                          alert(data.error || "خطا در حذف فاکتور تنخواه");
+                                        }
+                                      } catch (err: any) {
+                                        alert("خطا: " + err.message);
+                                      }
+                                    }}
+                                    className="p-1 hover:bg-rose-50 text-rose-400 hover:text-rose-600 rounded-lg cursor-pointer transition-colors"
+                                    title="حذف فاکتور تنخواه"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
             {/* Modal for paying an expense installment */}
@@ -2347,396 +2769,776 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                 })()}
               </div>
 
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[10px] text-amber-900 font-bold leading-relaxed">
+                📌 در زمان عقد قرارداد، طرف قرارداد به اندازه کل مبلغ قرارداد بدهکار می‌شود و هیچ قسط پیش‌فرضی ثبت نمی‌گردد. پس از ثبت قرارداد، می‌توانید اقساط توافقی یا واریزی‌های طرف قرارداد را ثبت نمایید.
+              </div>
+
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-2 text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-2.5 text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
               >
-                امضای قرارداد پیش‌فروش و صدور اقساط ساختمانی
+                ثبت قرارداد پیش‌فروش (بدهکار شدن طرف قرارداد به مبلغ کل)
               </button>
             </form>
           </div>
 
           {/* Pre-sales contracts list */}
           <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm lg:col-span-2 space-y-6">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 mb-4">قراردادهای پیش‌فروش فعال و معتبر</h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs text-right border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
-                      <th className="p-3">پیش‌خریدار</th>
-                      <th className="p-3">واحد مسکونی</th>
-                      <th className="p-3 text-center">تاریخ عقد</th>
-                      <th className="p-3 text-left">مبلغ قرارداد</th>
-                      <th className="p-3 text-center">جزئیات اقساط</th>
-                      <th className="p-3 text-center">عملیات</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {presalesList.map(ps => {
-                      const buyer = contactsList.find(c => c.id === ps.contactId);
-                      const unit = db.units.find(u => u.id === ps.unitId);
-                      return (
-                        <tr key={ps.id} className={`hover:bg-slate-50/50 cursor-pointer ${selectedPreSaleId === ps.id ? "bg-slate-50 font-bold" : ""}`} onClick={() => setSelectedPreSaleId(ps.id)}>
-                          <td className="p-3">
-                            <span className="font-extrabold text-slate-900 block">{buyer ? buyer.name : "پیش‌خریدار"}</span>
-                            <span className="text-[10px] text-slate-400 font-light mt-0.5 block">{buyer?.phone || ""}</span>
-                          </td>
-                          <td className="p-3 text-slate-700">
-                            {ps.unitId === "after_scoring" ? (
-                              <span className="text-indigo-600 font-semibold bg-indigo-50 px-2 py-0.5 rounded-md text-[10px]">
-                                تعیین واحد بعد از امتیازدهی
-                              </span>
-                            ) : (
-                              `واحد ${unit ? unit.unitNumber : ""}`
-                            )} 
-                            <div className="mt-1 flex flex-wrap gap-1 items-center">
-                              <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md">
-                                اولیه: {ps.contractArea} مترمربع
-                              </span>
-                              {ps.hasExactArea && ps.exactArea !== undefined && (
-                                <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-md font-bold">
-                                  ⚖️ سند رسمی: {ps.exactArea} مترمربع
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="p-3 text-center font-mono text-slate-500">{ps.contractDate}</td>
-                          <td className="p-3 text-left font-extrabold font-mono text-indigo-700">{formatRial(ps.totalPrice)}</td>
-                          <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
-                            <button 
-                              onClick={() => setSelectedPreSaleId(ps.id)}
-                              className={`px-2.5 py-1 rounded-lg font-bold text-[10px] transition-colors cursor-pointer ${selectedPreSaleId === ps.id ? "bg-indigo-600 text-white" : "bg-slate-100 text-indigo-700 hover:bg-indigo-955 hover:text-white"}`}
-                            >
-                              {selectedPreSaleId === ps.id ? "در حال نمایش" : "نمایش اقساط"}
-                            </button>
-                          </td>
-                          <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              onClick={async () => {
-                                if (!window.confirm("آیا از حذف این قرارداد پیش‌فروش اطمینان دارید؟")) return;
-                                try {
-                                  const res = await fetch(getApiUrl("/api/presales/delete"), {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ id: ps.id })
-                                  });
-                                  const data = await res.json();
-                                  if (data.status === "success") {
-                                    await onRefresh();
-                                  } else {
-                                    alert(data.error || "خطا در حذف قرارداد");
-                                  }
-                                } catch (err: any) {
-                                  alert("خطا: " + err.message);
-                                }
-                              }}
-                              className="p-1 hover:bg-rose-50 text-rose-600 rounded-lg cursor-pointer transition-colors"
-                              title="حذف قرارداد"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            {(() => {
+              const filteredPresales = presalesList.filter(ps => {
+                if (presaleProjectFilter !== "all" && ps.projectId !== presaleProjectFilter) return false;
+                const unit = db.units.find(u => u.id === ps.unitId);
+                const blockVal = (ps as any).blockName || unit?.blockName || "";
+                if (presaleBlockFilter !== "all" && blockVal !== presaleBlockFilter) return false;
+                if (presaleSearch.trim()) {
+                  const q = toEnglishDigits(presaleSearch).trim().toLowerCase();
+                  const buyer = contactsList.find(c => c.id === ps.contactId);
+                  const matchBuyer = (buyer?.name || "").toLowerCase().includes(q) || toEnglishDigits(buyer?.phone || "").includes(q);
+                  const matchUnit = toEnglishDigits(unit?.unitNumber || "").toLowerCase().includes(q);
+                  const matchBlock = blockVal.toLowerCase().includes(q);
+                  if (!matchBuyer && !matchUnit && !matchBlock) return false;
+                }
+                return true;
+              });
 
-            {/* Installment stages check list */}
-            {selectedPreSaleId && (
-              <div className="border-t border-slate-150 pt-6 animate-fadeIn">
-                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 mb-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">جدول سررسیدهای زمان‌بندی اقساط قرارداد پیش‌فروش</h3>
-                    <p className="text-[10px] text-slate-400 mt-0.5">امکان ثبت اقساط جدید، ویرایش یا حذف اقساط پرداخت نشده جهت انعطاف کامل با نحوه پرداخت خریدار</p>
+              const uniqueBlocks = Array.from(new Set(presalesList.map(ps => {
+                const u = db.units.find(unit => unit.id === ps.unitId);
+                return (ps as any).blockName || u?.blockName || "";
+              }).filter(Boolean)));
+
+              const handlePrintPresales = (mode: "after_filter" | "before_filter") => {
+                const source = mode === "after_filter" ? filteredPresales : presalesList;
+                printStructuredReport({
+                  title: "گزارش قراردادهای پیش‌فروش واحدها، اقساط و آورده خریداران",
+                  subtitle: "وضعیت مالی قراردادها، جمع قسط‌بندی، مجموع واریزی‌ها (آورده) و مانده بدهی",
+                  mode,
+                  filterDescription: mode === "after_filter"
+                    ? `جستجو: ${presaleSearch || "همه"} | پروژه: ${presaleProjectFilter === "all" ? "همه" : (projects.find(p => p.id === presaleProjectFilter)?.name || presaleProjectFilter)} | بلوک: ${presaleBlockFilter === "all" ? "همه" : presaleBlockFilter}`
+                    : undefined,
+                  columns: [
+                    { header: "ردیف", accessor: r => r.idx, align: "center" },
+                    { header: "پیش‌خریدار", accessor: r => r.buyer },
+                    { header: "واحد / بلوک", accessor: r => r.unit },
+                    { header: "متراژ", accessor: r => r.area, align: "center" },
+                    { header: "مبلغ کل قرارداد", accessor: r => r.totalPrice, align: "left" },
+                    { header: "جمع قسط‌بندی شده", accessor: r => r.installmentsSum, align: "left" },
+                    { header: "آورده طرف قرارداد (پرداختی)", accessor: r => r.paidAmount, align: "left" },
+                    { header: "مانده بدهی قرارداد", accessor: r => r.remainingDebt, align: "left" },
+                  ],
+                  rows: source.map((ps, idx) => {
+                    const buyer = contactsList.find(c => c.id === ps.contactId);
+                    const unit = db.units.find(u => u.id === ps.unitId);
+                    const instSum = installmentsList.filter(i => i.preSaleId === ps.id).reduce((s, i) => s + Number(i.amount || 0), 0);
+                    const buyerContractsCount = presalesList.filter(p => p.contactId === ps.contactId).length;
+                    const paidSum = transactionsList
+                      .filter(tx => tx.type === "income" && (tx.preSaleId === ps.id || (!tx.preSaleId && tx.contactId === ps.contactId && buyerContractsCount === 1)))
+                      .reduce((s, tx) => s + Number(tx.amount || 0), 0);
+                    const remDebt = Math.max(0, Number(ps.totalPrice || 0) - paidSum);
+                    return {
+                      idx: (idx + 1).toLocaleString("fa-IR"),
+                      buyer: buyer?.name || "پیش‌خریدار",
+                      unit: ps.unitId === "after_scoring" ? "تعیین بعد از امتیازدهی" : `واحد ${unit?.unitNumber || "—"}${unit?.blockName ? ` (بلوک ${unit.blockName})` : ""}`,
+                      area: `${ps.contractArea} متر`,
+                      totalPrice: Number(ps.totalPrice || 0).toLocaleString("fa-IR"),
+                      installmentsSum: instSum.toLocaleString("fa-IR"),
+                      paidAmount: paidSum.toLocaleString("fa-IR"),
+                      remainingDebt: remDebt.toLocaleString("fa-IR")
+                    };
+                  }),
+                  summaryItems: [
+                    { label: "تعداد قراردادها", value: `${source.length.toLocaleString("fa-IR")} فقره` },
+                    { label: "جمع کل مبالغ قراردادها", value: `${source.reduce((s, p) => s + Number(p.totalPrice || 0), 0).toLocaleString("fa-IR")} ریال` }
+                  ]
+                });
+              };
+
+              return (
+                <div className="space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">قراردادهای پیش‌فروش فعال و معتبر</h3>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        نمایش {filteredPresales.length.toLocaleString("fa-IR")} از {presalesList.length.toLocaleString("fa-IR")} قرارداد
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handlePrintPresales("after_filter")}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        چاپ نتایج فیلتر شده (بعد از فیلتر)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handlePrintPresales("before_filter")}
+                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        چاپ کل اطلاعات (قبل از فیلتر)
+                      </button>
+                    </div>
                   </div>
-                  <span className="text-[10px] text-indigo-600 bg-indigo-50 font-bold px-2.5 py-1 rounded-lg self-start sm:self-auto">برنامه پرداخت اختصاصی خریدار</span>
-                </div>
 
-                {/* Notice that installment settlements are done automatically through Transactions Manager */}
-                <div className="mb-6 p-4 bg-emerald-50/50 border border-emerald-150 rounded-2xl flex items-start gap-3 text-right">
-                  <Coins className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                  <div>
-                    <h4 className="text-xs font-bold text-emerald-950">💡 تسویه خودکار اقساط خریدار از طریق دریافت و پرداخت</h4>
-                    <p className="text-[10px] text-emerald-700 font-semibold mt-1 leading-relaxed">
-                      دیگر نیازی به ثبت مستقیم دریافتی در این بخش نیست! هر زمان که تراکنش دریافتی جدیدی در منوی <span className="font-extrabold text-indigo-700">«دریافت و پرداخت»</span> به نام پیش‌خریدار ثبت کنید، سیستم به صورت کاملاً خودکار و هوشمند آن را به این بخش هدایت کرده و اقساط خریدار را به ترتیب اولویت تاریخ سررسید تسویه می‌کند.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Final Deed Area Adjustment Form */}
-                {(() => {
-                  const currentPreSale = presalesList.find(ps => ps.id === selectedPreSaleId);
-                  if (!currentPreSale) return null;
-                  return (
-                    <div className="mb-6 p-5 bg-gradient-to-br from-amber-50 to-orange-50/50 border border-amber-200/80 rounded-2xl space-y-4">
-                      <div className="flex items-center gap-2 border-b border-amber-200/50 pb-2">
-                        <Building className="w-5 h-5 text-amber-700" />
-                        <div>
-                          <h4 className="text-xs font-extrabold text-amber-950">تعدیل و تصفیه نهایی متراژ واحد (بروزرسانی بعد از صدور سند رسمی)</h4>
-                          <p className="text-[10px] text-amber-700 font-medium">پس از مشخص شدن متراژ دقیق واحد در اداره ثبت و سند، مابه‌التفاوت متراژ را ثبت و تسویه کنید.</p>
-                        </div>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={presaleSearch}
+                          onChange={e => setPresaleSearch(e.target.value)}
+                          placeholder="جستجو بر اساس نام پیش‌خریدار، شماره واحد یا کد بلوک..."
+                          className="w-full bg-white border border-slate-200 rounded-xl pr-9 pl-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                        />
                       </div>
-
-                      <form onSubmit={handleUpdateExactArea} className="space-y-4">
-                        <div className="flex items-center gap-3 bg-white/75 p-3 rounded-xl border border-amber-100">
-                          <input
-                            type="checkbox"
-                            id="hasExactAreaChecked"
-                            checked={hasExactAreaChecked}
-                            onChange={e => setHasExactAreaChecked(e.target.checked)}
-                            className="w-4 h-4 text-amber-600 border-amber-300 rounded focus:ring-amber-500 cursor-pointer"
-                          />
-                          <label htmlFor="hasExactAreaChecked" className="text-xs font-bold text-amber-900 cursor-pointer select-none">
-                            فعال‌سازی ثبت متراژ دقیق سند رسمی برای این قرارداد
-                          </label>
-                        </div>
-
-                        {hasExactAreaChecked && (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fadeIn">
-                            <div className="space-y-1">
-                              <label className="text-[10px] text-slate-500 font-bold block">متراژ دقیق سند رسمی (مترمربع)</label>
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                required
-                                placeholder="مثال: ۱۰۵.۴"
-                                value={exactAreaInput}
-                                onChange={e => setExactAreaInput(toEnglishDigits(e.target.value))}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500 font-mono"
-                              />
-                              <span className="text-[9px] text-slate-400 font-medium block">متراژ تقریبی اولیه قرارداد: {currentPreSale.contractArea} مترمربع</span>
-                            </div>
-
-                            <div className="space-y-1">
-                              <label className="text-[10px] text-slate-500 font-bold block">قیمت توافقی هر متر مازاد/کسری (ریال)</label>
-                              <FormattedAmountInput
-                                required
-                                placeholder="قیمت هر متر مازاد"
-                                value={secondaryPriceInput}
-                                onChange={val => setSecondaryPriceInput(val)}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500"
-                              />
-                              <span className="text-[9px] text-slate-400 font-medium block">قیمت اولیه هر متر قرارداد: {formatRial(currentPreSale.pricePerMeter)}</span>
-                            </div>
-
-                            {/* Live calculations */}
-                            <div className="md:col-span-2 bg-amber-100/40 border border-amber-200/50 p-3 rounded-xl space-y-2">
-                              <div className="flex justify-between items-center text-xs font-semibold text-amber-900">
-                                <span>تفاضل متراژ (دقیق - اولیه):</span>
-                                <span className="font-mono font-bold">
-                                  {(() => {
-                                    const diff = Number(exactAreaInput || 0) - currentPreSale.contractArea;
-                                    if (diff > 0) {
-                                      return <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-extrabold">+{diff.toFixed(2)} متر مربع (مازاد متراژ)</span>;
-                                    } else if (diff < 0) {
-                                      return <span className="text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md font-extrabold">{diff.toFixed(2)} متر مربع (کسری متراژ)</span>;
-                                    } else {
-                                      return <span className="text-slate-500 font-extrabold">بدون تغییر</span>;
-                                    }
-                                  })()}
-                                </span>
-                              </div>
-
-                              <div className="flex justify-between items-center text-xs font-semibold text-amber-900">
-                                <span>مبلغ تعدیل نهایی قرارداد:</span>
-                                <span className="font-mono font-extrabold text-amber-950">
-                                  {(() => {
-                                    const diff = Number(exactAreaInput || 0) - currentPreSale.contractArea;
-                                    const adjPrice = diff * Number(secondaryPriceInput || 0);
-                                    return (
-                                      <span className={adjPrice > 0 ? "text-emerald-700 font-extrabold" : adjPrice < 0 ? "text-rose-700 font-extrabold" : "text-slate-500"}>
-                                        {adjPrice > 0 ? "اضافه دریافت: +" : adjPrice < 0 ? "بستانکاری خریدار: " : ""}
-                                        {formatRial(Math.round(adjPrice))}
-                                      </span>
-                                    );
-                                  })()}
-                                </span>
-                              </div>
-
-                              <div className="flex justify-between items-center text-xs font-extrabold text-indigo-900 border-t border-amber-200/50 pt-2 mt-1">
-                                <span>مبلغ کل اصلاح‌شده قرارداد پیش‌فروش:</span>
-                                <span className="font-mono text-sm">
-                                  {(() => {
-                                    const diff = Number(exactAreaInput || 0) - currentPreSale.contractArea;
-                                    const adjPrice = diff * Number(secondaryPriceInput || 0);
-                                    const finalPrice = (currentPreSale.contractArea * currentPreSale.pricePerMeter) + adjPrice;
-                                    return formatRial(Math.round(finalPrice));
-                                  })()}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex justify-end">
-                          <button
-                            type="submit"
-                            disabled={isSubmitting}
-                            className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                      <button
+                        type="button"
+                        onClick={() => setShowPresaleAdv(!showPresaleAdv)}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border cursor-pointer ${
+                          showPresaleAdv ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "bg-white border-slate-200 text-slate-700"
+                        }`}
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        جستجوی پیشرفته
+                      </button>
+                    </div>
+                    {showPresaleAdv && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-slate-200/80">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-500 block mb-1">پروژه</label>
+                          <select
+                            value={presaleProjectFilter}
+                            onChange={e => setPresaleProjectFilter(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
                           >
-                            {isSubmitting ? "در حال ثبت..." : "بروزرسانی متراژ دقیق و تعدیل قرارداد"}
+                            <option value="all">همه پروژه‌ها</option>
+                            {projects.map(p => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-500 block mb-1">بلوک</label>
+                          <select
+                            value={presaleBlockFilter}
+                            onChange={e => setPresaleBlockFilter(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                          >
+                            <option value="all">همه بلوک‌ها</option>
+                            {uniqueBlocks.map(b => (
+                              <option key={b} value={b}>بلوک {b}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex items-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPresaleSearch("");
+                              setPresaleProjectFilter("all");
+                              setPresaleBlockFilter("all");
+                            }}
+                            className="w-full py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-bold cursor-pointer"
+                          >
+                            پاک کردن فیلترها
                           </button>
                         </div>
-                      </form>
-                    </div>
-                  );
-                })()}
+                      </div>
+                    )}
+                  </div>
 
-                {/* Form to add a custom installment */}
-                <form onSubmit={handleAddInstallment} className="mb-6 p-4 bg-slate-50 border border-slate-150 rounded-2xl space-y-3">
-                  <h4 className="text-xs font-bold text-slate-800">افزودن قسط سفارشی / مرحله جدید پرداخت:</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs text-right border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
+                          <th className="p-3">پیش‌خریدار</th>
+                          <th className="p-3">واحد مسکونی</th>
+                          <th className="p-3 text-left">مبلغ کل قرارداد</th>
+                          <th className="p-3 text-left">جمع قسط‌بندی</th>
+                          <th className="p-3 text-left">آورده خریدار (پرداختی)</th>
+                          <th className="p-3 text-left">مانده بدهی</th>
+                          <th className="p-3 text-center">اقساط و واریزی‌ها</th>
+                          <th className="p-3 text-center">عملیات</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredPresales.map(ps => {
+                          const buyer = contactsList.find(c => c.id === ps.contactId);
+                          const unit = db.units.find(u => u.id === ps.unitId);
+                          const contractInsts = installmentsList.filter(i => i.preSaleId === ps.id);
+                          const sumInstallments = contractInsts.reduce((s, i) => s + Number(i.amount || 0), 0);
+                          const isOverInstallment = sumInstallments > ps.totalPrice;
+                          const buyerContractsCount = presalesList.filter(p => p.contactId === ps.contactId).length;
+                          const buyerPayments = transactionsList.filter(
+                            tx => tx.type === "income" && (tx.preSaleId === ps.id || (!tx.preSaleId && tx.contactId === ps.contactId && buyerContractsCount === 1))
+                          );
+                          const totalPaidContribution = buyerPayments.reduce((s, tx) => s + Number(tx.amount || 0), 0);
+                          const remainingContractDebt = Math.max(0, Number(ps.totalPrice || 0) - totalPaidContribution);
+
+                          return (
+                            <tr key={ps.id} className={`hover:bg-slate-50/50 cursor-pointer ${selectedPreSaleId === ps.id ? "bg-indigo-50/40 font-bold" : ""}`} onClick={() => setSelectedPreSaleId(ps.id)}>
+                              <td className="p-3">
+                                <span className="font-extrabold text-slate-900 block">{buyer ? buyer.name : "پیش‌خریدار"}</span>
+                                <span className="text-[10px] text-slate-400 font-light mt-0.5 block">{buyer?.phone || ""} | {ps.contractDate}</span>
+                              </td>
+                              <td className="p-3 text-slate-700">
+                                {ps.unitId === "after_scoring" ? (
+                                  <span className="text-indigo-600 font-semibold bg-indigo-50 px-2 py-0.5 rounded-md text-[10px]">
+                                    تعیین واحد بعد از امتیازدهی
+                                  </span>
+                                ) : (
+                                  `واحد ${unit ? unit.unitNumber : ""}${unit?.blockName ? ` (بلوک ${unit.blockName})` : ""}`
+                                )}
+                                <div className="mt-1 flex flex-wrap gap-1 items-center">
+                                  <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-md">
+                                    {ps.contractArea} مترمربع
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="p-3 text-left font-extrabold font-mono text-indigo-700">{formatRial(ps.totalPrice)}</td>
+                              <td className="p-3 text-left font-mono">
+                                {contractInsts.length === 0 ? (
+                                  <span className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md font-bold">
+                                    قسط‌بندی نشده (۰ قسط)
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-col items-end">
+                                    <span className={`font-extrabold ${isOverInstallment ? "text-rose-600" : "text-slate-800"}`}>
+                                      {formatRial(sumInstallments)}
+                                    </span>
+                                    {isOverInstallment && (
+                                      <span className="text-[9px] text-rose-600 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded font-bold mt-0.5">
+                                        ⚠️ بیشتر از مبلغ قرارداد!
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-3 text-left font-extrabold font-mono text-emerald-600">
+                                {formatRial(totalPaidContribution)}
+                                {contractInsts.length === 0 && totalPaidContribution > 0 && (
+                                  <span className="block text-[9px] text-emerald-700 font-bold">آورده ثبت‌شده (بدون قسط‌بندی)</span>
+                                )}
+                              </td>
+                              <td className="p-3 text-left font-extrabold font-mono text-rose-600">
+                                {remainingContractDebt > 0 ? `${formatRial(remainingContractDebt)} (بدهکار)` : <span className="text-emerald-600">تسویه کامل</span>}
+                              </td>
+                              <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                <button 
+                                  onClick={() => setSelectedPreSaleId(ps.id)}
+                                  className={`px-2.5 py-1 rounded-lg font-bold text-[10px] transition-colors cursor-pointer ${selectedPreSaleId === ps.id ? "bg-indigo-600 text-white" : "bg-slate-100 text-indigo-700 hover:bg-indigo-955 hover:text-white"}`}
+                                >
+                                  {selectedPreSaleId === ps.id ? "در حال نمایش" : "مدیریت اقساط و آورده"}
+                                </button>
+                              </td>
+                              <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm("آیا از حذف این قرارداد پیش‌فروش اطمینان دارید؟")) return;
+                                    try {
+                                      const res = await fetch(getApiUrl("/api/presales/delete"), {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ id: ps.id })
+                                      });
+                                      const data = await res.json();
+                                      if (data.status === "success") {
+                                        await onRefresh();
+                                      } else {
+                                        alert(data.error || "خطا در حذف قرارداد");
+                                      }
+                                    } catch (err: any) {
+                                      alert("خطا: " + err.message);
+                                    }
+                                  }}
+                                  className="p-1 hover:bg-rose-50 text-rose-600 rounded-lg cursor-pointer transition-colors"
+                                  title="حذف قرارداد"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Selected Pre-Sale Contract Details: Summary, Warning, Direct Buyer Contribution Payments, and Custom Installments */}
+            {selectedPreSaleId && (() => {
+              const currentPreSale = presalesList.find(ps => ps.id === selectedPreSaleId);
+              if (!currentPreSale) return null;
+              const buyer = contactsList.find(c => c.id === currentPreSale.contactId);
+              const contractInstallments = installmentsList.filter(i => i.preSaleId === selectedPreSaleId);
+              const sumInstallments = contractInstallments.reduce((s, i) => s + Number(i.amount || 0), 0);
+              const unscheduledAmount = currentPreSale.totalPrice - sumInstallments;
+              const isOverScheduled = sumInstallments > currentPreSale.totalPrice;
+
+              const buyerContractsCount = presalesList.filter(p => p.contactId === currentPreSale.contactId).length;
+              const contractPayments = transactionsList.filter(
+                tx => tx.type === "income" && (
+                  tx.preSaleId === currentPreSale.id ||
+                  (!tx.preSaleId && tx.contactId === currentPreSale.contactId && buyerContractsCount === 1)
+                )
+              );
+              const totalPaidContribution = contractPayments.reduce((s, tx) => s + Number(tx.amount || 0), 0);
+              const remainingDebt = Math.max(0, Number(currentPreSale.totalPrice || 0) - totalPaidContribution);
+
+              return (
+                <div className="border-t border-slate-150 pt-6 space-y-6 animate-fadeIn">
+                  <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
                     <div>
-                      <label className="text-[9px] text-slate-500 font-bold block mb-1">شرح قسط / مرحله ساخت</label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="مثال: قسط زمان نصب کابینت‌ها"
-                        value={newInstForm.installmentName}
-                        onChange={e => setNewInstForm({ ...newInstForm, installmentName: e.target.value })}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
-                      />
+                      <h3 className="text-sm font-bold text-slate-900">
+                        مدیریت مالی، آورده خریدار و اقساط قرارداد ({buyer?.name || "پیش‌خریدار"})
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        هرگونه پرداخت طرف قرارداد (چه اقساطی ثبت شده باشد و چه خالی باشد) جزو آورده خریدار محسوب شده و از بدهی کل قرارداد کسر می‌گردد.
+                      </p>
                     </div>
-                    <div>
-                      <label className="text-[9px] text-slate-500 font-bold block mb-1">تاریخ سررسید قسط</label>
-                      <ShamsiDatePicker
-                        required
-                        placeholder="مثال: ۱۴۰۴/۰۳/۱۵"
-                        value={newInstForm.dueDate}
-                        onChange={val => setNewInstForm({ ...newInstForm, dueDate: val })}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-center focus:outline-none focus:border-indigo-500"
-                      />
+                    <span className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200 font-bold px-3 py-1 rounded-xl">
+                      پرونده مالی قرارداد #{currentPreSale.id.slice(-5)}
+                    </span>
+                  </div>
+
+                  {/* Financial Summary Cards (Requirements 4, 5, 6) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] font-bold text-slate-500 block">مبلغ کل قرارداد (بدهی اولیه)</span>
+                      <span className="text-sm font-black font-mono text-slate-900 mt-1 block">
+                        {formatRial(currentPreSale.totalPrice)}
+                      </span>
                     </div>
-                    <div>
-                      <label className="text-[9px] text-slate-500 font-bold block mb-1">
-                        مبلغ قسط (ریال)
-                      </label>
-                      <div className="flex gap-2">
-                        <FormattedAmountInput
-                          required
-                          placeholder="مبلغ قسط به ریال"
-                          value={newInstForm.amount}
-                          onChange={val => setNewInstForm({ ...newInstForm, amount: val })}
-                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                    <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200">
+                      <span className="text-[10px] font-bold text-emerald-700 block">آورده طرف قرارداد (جمع پرداختی‌ها)</span>
+                      <span className="text-sm font-black font-mono text-emerald-800 mt-1 block">
+                        {formatRial(totalPaidContribution)}
+                      </span>
+                      <span className="text-[9px] text-emerald-600 font-bold block mt-0.5">
+                        {contractPayments.length.toLocaleString("fa-IR")} فقره واریزی ثبت‌شده
+                      </span>
+                    </div>
+                    <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200">
+                      <span className="text-[10px] font-bold text-rose-700 block">مانده بدهی طرف قرارداد</span>
+                      <span className="text-sm font-black font-mono text-rose-800 mt-1 block">
+                        {formatRial(remainingDebt)}
+                      </span>
+                      <span className="text-[9px] text-rose-600 font-bold block mt-0.5">
+                        {remainingDebt > 0 ? "بدهکار به شرکت" : "تسویه کامل قرارداد"}
+                      </span>
+                    </div>
+                    <div className={`p-3.5 rounded-2xl border ${isOverScheduled ? "bg-rose-100 border-rose-400" : "bg-indigo-50 border-indigo-200"}`}>
+                      <span className={`text-[10px] font-bold block ${isOverScheduled ? "text-rose-800" : "text-indigo-700"}`}>
+                        جمع مبلغ قسط‌بندی شده ({contractInstallments.length.toLocaleString("fa-IR")} قسط)
+                      </span>
+                      <span className={`text-sm font-black font-mono mt-1 block ${isOverScheduled ? "text-rose-900" : "text-indigo-900"}`}>
+                        {formatRial(sumInstallments)}
+                      </span>
+                      <span className={`text-[9px] font-bold block mt-0.5 ${isOverScheduled ? "text-rose-700" : "text-indigo-600"}`}>
+                        {isOverScheduled
+                          ? `مازاد بر قرارداد: ${formatRial(sumInstallments - currentPreSale.totalPrice)}`
+                          : `مانده قسط‌بندی نشده: ${formatRial(Math.max(0, unscheduledAmount))}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Requirement 6: Over-Installment Warning Alert */}
+                  {isOverScheduled && (
+                    <div className="p-4 bg-rose-50 border-2 border-rose-400 rounded-2xl flex items-start gap-3 text-rose-900 animate-pulse">
+                      <AlertTriangle className="w-6 h-6 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="text-xs font-black text-rose-900">
+                          ⚠️ هشدار مهم: جمع مبالغ اقساط ثبت‌شده ({formatRial(sumInstallments)}) از مبلغ کل قرارداد ({formatRial(currentPreSale.totalPrice)}) به اندازه {formatRial(sumInstallments - currentPreSale.totalPrice)} بیشتر است!
+                        </h4>
+                        <p className="text-[11px] text-rose-700 font-bold mt-1">
+                          لطفاً مبالغ اقساط را بازبینی و ویرایش کنید یا در صورت افزایش متراژ، مبلغ کل قرارداد را بروزرسانی نمایید.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Requirement 4, 8, 10: Buyer Contribution / Payments Section (Shown even when installments list is empty!) */}
+                  <div className="p-5 bg-emerald-50/40 border border-emerald-200 rounded-2xl space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-200/70 pb-3">
+                      <div className="flex items-center gap-2">
+                        <Coins className="w-5 h-5 text-emerald-700" />
+                        <div>
+                          <h4 className="text-xs font-extrabold text-emerald-950">
+                            آورده طرف قرارداد و فهرست پرداختی‌های انجام‌شده (حتی بدون قسط‌بندی)
+                          </h4>
+                          <p className="text-[10px] text-emerald-700">
+                            تمامی مبالغ پرداختی خریدار در این قسمت نمایش داده شده، جزو آورده طرف قرارداد محسوب می‌شوند و مستقیماً از بدهی کل قرارداد کسر می‌گردند.
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs font-black font-mono text-emerald-800 bg-white px-3 py-1 rounded-xl border border-emerald-200">
+                        جمع آورده: {formatRial(totalPaidContribution)}
+                      </span>
+                    </div>
+
+                    {/* Direct Payment Registration Form (with Mandatory Receiving Account & Source Account) */}
+                    <form onSubmit={handleRegisterPresalePayment} className="bg-white p-4 rounded-xl border border-emerald-200 space-y-3">
+                      <h5 className="text-xs font-bold text-slate-800">
+                        ثبت دریافتی / واریزی جدید از طرف قرارداد (افزایش آورده و کسر از بدهی قرارداد):
+                      </h5>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-600 block mb-1">مبلغ واریزی خریدار (ریال) *</label>
+                          <FormattedAmountInput
+                            required
+                            placeholder="مبلغ دریافتی به ریال"
+                            value={presalePayAmount}
+                            onChange={setPresalePayAmount}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-emerald-800 block mb-1">حساب دریافتی (بانک/صندوق شرکت) *</label>
+                          <select
+                            required
+                            value={presalePayAccountId}
+                            onChange={e => setPresalePayAccountId(e.target.value)}
+                            className="w-full bg-emerald-50/50 border border-emerald-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900"
+                          >
+                            <option value="">-- انتخاب اجباری حساب دریافتی شرکت --</option>
+                            {accountsList.map(acc => (
+                              <option key={acc.id} value={acc.id}>
+                                {acc.name} ({acc.type === "bank" ? "بانک" : "صندوق"} - موجودی: {formatRial(acc.balance)})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-600 block mb-1">حساب مبدا (حساب طرف حسابی که واریزی انجام داده)</label>
+                          <input
+                            type="text"
+                            placeholder={`مثال: حساب/کارت ${buyer?.name || "خریدار"}`}
+                            value={presalePaySourceAccount}
+                            onChange={e => setPresalePaySourceAccount(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-600 block mb-1">تاریخ واریز *</label>
+                          <ShamsiDatePicker
+                            required
+                            value={presalePayDate}
+                            onChange={setPresalePayDate}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-center"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-600 block mb-1">شماره فیش / پیگیری بانکی</label>
+                          <input
+                            type="text"
+                            placeholder="شماره پیگیری / ارجاع"
+                            value={presalePayRef}
+                            onChange={e => setPresalePayRef(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-600 block mb-1">توضیحات دریافتی</label>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              placeholder="شرح واریزی (پیش‌پرداخت، علی‌الحساب و...)"
+                              value={presalePayDesc}
+                              onChange={e => setPresalePayDesc(e.target.value)}
+                              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                            />
+                            <button
+                              type="submit"
+                              disabled={isSubmitting}
+                              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer shadow-2xs"
+                            >
+                              + ثبت دریافتی
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </form>
+
+                    {/* List of Buyer Payments / Contributions */}
+                    <div className="bg-white rounded-xl border border-emerald-100 overflow-hidden">
+                      <table className="w-full text-xs text-right border-collapse">
+                        <thead>
+                          <tr className="bg-emerald-50/70 border-b border-emerald-100 text-emerald-900 font-bold">
+                            <th className="p-2.5 text-center">ردیف</th>
+                            <th className="p-2.5 text-center">تاریخ پرداخت</th>
+                            <th className="p-2.5">شرح دریافتی (آورده خریدار)</th>
+                            <th className="p-2.5">حساب دریافتی (شرکت)</th>
+                            <th className="p-2.5">حساب مبدا (واریزکننده)</th>
+                            <th className="p-2.5 text-center">شماره فیش</th>
+                            <th className="p-2.5 text-left">مبلغ (ریال)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {contractPayments.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="p-4 text-center text-slate-400 text-xs">
+                                هنوز هیچ پرداختی برای این قرارداد ثبت نشده است.
+                              </td>
+                            </tr>
+                          ) : (
+                            contractPayments.map((tx, idx) => {
+                              const recAcc = accountsList.find(a => a.id === tx.accountId);
+                              return (
+                                <tr key={tx.id} className="hover:bg-slate-50">
+                                  <td className="p-2.5 text-center font-mono text-slate-500">{(idx + 1).toLocaleString("fa-IR")}</td>
+                                  <td className="p-2.5 text-center font-mono text-slate-700">{tx.date}</td>
+                                  <td className="p-2.5 font-bold text-slate-800">{tx.description || "واریزی پیش‌خریدار"}</td>
+                                  <td className="p-2.5 text-emerald-700 font-bold">{recAcc ? recAcc.name : (tx.destinationAccount || "—")}</td>
+                                  <td className="p-2.5 text-slate-600">{tx.sourceAccount || buyer?.name || "—"}</td>
+                                  <td className="p-2.5 text-center font-mono text-slate-500">{tx.referenceNumber || "—"}</td>
+                                  <td className="p-2.5 text-left font-extrabold font-mono text-emerald-700">{formatRial(tx.amount)}</td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Final Deed Area Adjustment Form */}
+                  <div className="p-5 bg-gradient-to-br from-amber-50 to-orange-50/50 border border-amber-200/80 rounded-2xl space-y-4">
+                    <div className="flex items-center gap-2 border-b border-amber-200/50 pb-2">
+                      <Building className="w-5 h-5 text-amber-700" />
+                      <div>
+                        <h4 className="text-xs font-extrabold text-amber-950">تعدیل و تصفیه نهایی متراژ واحد (بروزرسانی بعد از صدور سند رسمی)</h4>
+                        <p className="text-[10px] text-amber-700 font-medium">پس از مشخص شدن متراژ دقیق واحد در اداره ثبت و سند، مابه‌التفاوت متراژ را ثبت و تسویه کنید.</p>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleUpdateExactArea} className="space-y-4">
+                      <div className="flex items-center gap-3 bg-white/75 p-3 rounded-xl border border-amber-100">
+                        <input
+                          type="checkbox"
+                          id="hasExactAreaChecked"
+                          checked={hasExactAreaChecked}
+                          onChange={e => setHasExactAreaChecked(e.target.checked)}
+                          className="w-4 h-4 text-amber-600 border-amber-300 rounded focus:ring-amber-500 cursor-pointer"
                         />
+                        <label htmlFor="hasExactAreaChecked" className="text-xs font-bold text-amber-900 cursor-pointer select-none">
+                          فعال‌سازی ثبت متراژ دقیق سند رسمی برای این قرارداد
+                        </label>
+                      </div>
+
+                      {hasExactAreaChecked && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fadeIn">
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 font-bold block">متراژ دقیق سند رسمی (مترمربع)</label>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              required
+                              placeholder="مثال: ۱۰۵.۴"
+                              value={exactAreaInput}
+                              onChange={e => setExactAreaInput(toEnglishDigits(e.target.value))}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500 font-mono"
+                            />
+                            <span className="text-[9px] text-slate-400 font-medium block">متراژ تقریبی اولیه قرارداد: {currentPreSale.contractArea} مترمربع</span>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-slate-500 font-bold block">قیمت توافقی هر متر مازاد/کسری (ریال)</label>
+                            <FormattedAmountInput
+                              required
+                              placeholder="قیمت هر متر مازاد"
+                              value={secondaryPriceInput}
+                              onChange={val => setSecondaryPriceInput(val)}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-amber-500"
+                            />
+                            <span className="text-[9px] text-slate-400 font-medium block">قیمت اولیه هر متر قرارداد: {formatRial(currentPreSale.pricePerMeter)}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex justify-end">
                         <button
                           type="submit"
                           disabled={isSubmitting}
-                          className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap shadow-2xs"
+                          className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
                         >
-                          + ثبت قسط
+                          {isSubmitting ? "در حال ثبت..." : "بروزرسانی متراژ دقیق و تعدیل قرارداد"}
                         </button>
                       </div>
-                    </div>
+                    </form>
                   </div>
-                </form>
-                
-                <div className="space-y-2">
-                  {installmentsList.filter(i => i.preSaleId === selectedPreSaleId).map(inst => {
-                    const isEditing = editingInstId === inst.id;
-                    return (
-                      <div key={inst.id} className="p-3 border border-slate-150 rounded-xl hover:shadow-2xs transition-shadow bg-white">
-                        {isEditing ? (
-                          <div className="space-y-3">
-                            <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1.5 flex justify-between">
-                              <span>ویرایش مشخصات قسط</span>
-                              <span className="text-[10px] text-slate-400 font-normal">تمام مبالغ به ریال ثبت می‌شوند</span>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                              <div>
-                                <label className="text-[9px] text-slate-500 font-bold block mb-1">شرح قسط / مرحله</label>
-                                <input
-                                  type="text"
-                                  required
-                                  value={editingInstForm.installmentName}
-                                  onChange={e => setEditingInstForm({ ...editingInstForm, installmentName: e.target.value })}
-                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[9px] text-slate-500 font-bold block mb-1">سررسید</label>
-                                <ShamsiDatePicker
-                                  required
-                                  value={editingInstForm.dueDate}
-                                  onChange={val => setEditingInstForm({ ...editingInstForm, dueDate: val })}
-                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-center focus:outline-none focus:border-indigo-500"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[9px] text-slate-500 font-bold block mb-1">
-                                  مبلغ قسط (ریال)
-                                </label>
-                                <FormattedAmountInput
-                                  required
-                                  value={editingInstForm.amount}
-                                  onChange={val => setEditingInstForm({ ...editingInstForm, amount: val })}
-                                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
-                                />
-                              </div>
-                            </div>
-                            <div className="flex justify-end gap-2 pt-1">
-                              <button
-                                type="button"
-                                onClick={() => setEditingInstId(null)}
-                                className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                                انصراف
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleSaveEditInstallment(inst.id)}
-                                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
-                              >
-                                <Save className="w-3.5 h-3.5" />
-                                ذخیره تغییرات
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
-                            <div className="flex items-center gap-2">
-                              {inst.isPaid ? (
-                                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                              ) : (inst.percentPaid || 0) > 0 ? (
-                                <Clock className="w-4 h-4 text-amber-500 shrink-0 animate-pulse" />
-                              ) : (
-                                <Clock className="w-4 h-4 text-slate-400 shrink-0" />
-                              )}
-                              <div>
-                                <span className="text-xs font-bold text-slate-800 block">{inst.installmentName}</span>
-                                <span className="text-[9px] text-slate-400 font-light mt-0.5 block font-mono">
-                                  سررسید: {inst.dueDate} {inst.isPaid && inst.paidDate && ` | تسویه شده در: ${inst.paidDate}`}
-                                </span>
-                              </div>
-                            </div>
 
-                            <div className="flex flex-wrap items-center gap-3 self-end sm:self-auto">
-                              {/* Progress bar or text showing percentage paid */}
-                              {((inst.percentPaid || 0) > 0 && (inst.percentPaid || 0) < 100) && (
-                                <div className="flex items-center gap-2 bg-amber-50/70 border border-amber-150 rounded-lg px-2 py-1">
-                                  <div className="w-16 bg-slate-100 rounded-full h-1.5 overflow-hidden shrink-0">
-                                    <div className="bg-amber-500 h-full rounded-full" style={{ width: `${inst.percentPaid}%` }} />
-                                  </div>
-                                  <span className="text-[10px] font-extrabold text-amber-700 font-mono">
-                                    {inst.percentPaid}% ({formatRial(inst.amountPaid || 0)})
-                                  </span>
+                  {/* Form to add a custom installment */}
+                  <form onSubmit={handleAddInstallment} className="p-4 bg-slate-50 border border-slate-150 rounded-2xl space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <h4 className="text-xs font-bold text-slate-800">تعریف و افزودن قسط جدید برای این قرارداد:</h4>
+                      <span className="text-[10px] font-bold text-indigo-700">
+                        جمع اقساط فعلی: {formatRial(sumInstallments)} از {formatRial(currentPreSale.totalPrice)}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div>
+                        <label className="text-[9px] text-slate-500 font-bold block mb-1">شرح قسط / مرحله ساخت</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="مثال: قسط اول - اسکلت یا نازک‌کاری"
+                          value={newInstForm.installmentName}
+                          onChange={e => setNewInstForm({ ...newInstForm, installmentName: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-slate-500 font-bold block mb-1">تاریخ سررسید قسط</label>
+                        <ShamsiDatePicker
+                          required
+                          placeholder="مثال: ۱۴۰۴/۰۳/۱۵"
+                          value={newInstForm.dueDate}
+                          onChange={val => setNewInstForm({ ...newInstForm, dueDate: val })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-center focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-slate-500 font-bold block mb-1">مبلغ قسط (ریال)</label>
+                        <div className="flex gap-2">
+                          <FormattedAmountInput
+                            required
+                            placeholder="مبلغ قسط به ریال"
+                            value={newInstForm.amount}
+                            onChange={val => setNewInstForm({ ...newInstForm, amount: val })}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                          />
+                          <button
+                            type="submit"
+                            disabled={isSubmitting}
+                            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap shadow-2xs"
+                          >
+                            + ثبت قسط
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </form>
+
+                  {/* Installments List */}
+                  <div className="space-y-2">
+                    {contractInstallments.length === 0 ? (
+                      <div className="p-6 bg-slate-50 border border-dashed border-slate-200 rounded-2xl text-center text-xs text-slate-500">
+                        برای این قرارداد هنوز قسط‌بندی ثبت نشده است.{totalPaidContribution > 0 ? ` با این حال مبلغ ${formatRial(totalPaidContribution)} به عنوان آورده طرف قرارداد ثبت و از بدهی کسر شده است.` : " در صورت نیاز می‌توانید از فرم بالا اقساط را وارد نمایید."}
+                      </div>
+                    ) : (
+                      contractInstallments.map(inst => {
+                        const isEditing = editingInstId === inst.id;
+                        return (
+                          <div key={inst.id} className="p-3 border border-slate-150 rounded-xl hover:shadow-2xs transition-shadow bg-white">
+                            {isEditing ? (
+                              <div className="space-y-3">
+                                <div className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-1.5 flex justify-between">
+                                  <span>ویرایش مشخصات قسط</span>
+                                  <span className="text-[10px] text-slate-400 font-normal">تمام مبالغ به ریال ثبت می‌شوند</span>
                                 </div>
-                              )}
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                  <div>
+                                    <label className="text-[9px] text-slate-500 font-bold block mb-1">شرح قسط / مرحله</label>
+                                    <input
+                                      type="text"
+                                      required
+                                      value={editingInstForm.installmentName}
+                                      onChange={e => setEditingInstForm({ ...editingInstForm, installmentName: e.target.value })}
+                                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[9px] text-slate-500 font-bold block mb-1">سررسید</label>
+                                    <ShamsiDatePicker
+                                      required
+                                      value={editingInstForm.dueDate}
+                                      onChange={val => setEditingInstForm({ ...editingInstForm, dueDate: val })}
+                                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-center focus:outline-none focus:border-indigo-500"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[9px] text-slate-500 font-bold block mb-1">مبلغ قسط (ریال)</label>
+                                    <FormattedAmountInput
+                                      required
+                                      value={editingInstForm.amount}
+                                      onChange={val => setEditingInstForm({ ...editingInstForm, amount: val })}
+                                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="flex justify-end gap-2 pt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingInstId(null)}
+                                    className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                    انصراف
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSaveEditInstallment(inst.id)}
+                                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shadow-2xs"
+                                  >
+                                    <Save className="w-3.5 h-3.5" />
+                                    ذخیره تغییرات
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+                                <div className="flex items-center gap-2">
+                                  {inst.isPaid ? (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                  ) : ((inst as any).percentPaid || 0) > 0 ? (
+                                    <Clock className="w-4 h-4 text-amber-500 shrink-0 animate-pulse" />
+                                  ) : (
+                                    <Clock className="w-4 h-4 text-slate-400 shrink-0" />
+                                  )}
+                                  <div>
+                                    <span className="text-xs font-bold text-slate-800 block">{inst.installmentName}</span>
+                                    <span className="text-[9px] text-slate-400 font-light mt-0.5 block font-mono">
+                                      سررسید: {inst.dueDate} {inst.isPaid && inst.paidDate && ` | تسویه شده در: ${inst.paidDate}`}
+                                    </span>
+                                  </div>
+                                </div>
 
-                              <span className="font-extrabold font-mono text-xs text-slate-800">{formatRial(inst.amount)}</span>
-                              
-                              {inst.isPaid ? (
-                                <span className="text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg font-bold">وصول کامل (۱۰۰٪)</span>
-                              ) : (
-                                <div className="flex items-center gap-1.5">
-                                  {!(inst.percentPaid && inst.percentPaid > 0) && (
-                                    <>
+                                <div className="flex flex-wrap items-center gap-3 self-end sm:self-auto">
+                                  {(((inst as any).percentPaid || 0) > 0 && ((inst as any).percentPaid || 0) < 100) && (
+                                    <div className="flex items-center gap-2 bg-amber-50/70 border border-amber-150 rounded-lg px-2 py-1">
+                                      <div className="w-16 bg-slate-100 rounded-full h-1.5 overflow-hidden shrink-0">
+                                        <div className="bg-amber-500 h-full rounded-full" style={{ width: `${(inst as any).percentPaid}%` }} />
+                                      </div>
+                                      <span className="text-[10px] font-extrabold text-amber-700 font-mono">
+                                        {(inst as any).percentPaid}% ({formatRial((inst as any).amountPaid || 0)})
+                                      </span>
+                                    </div>
+                                  )}
+
+                                  <span className="font-extrabold font-mono text-xs text-slate-800">{formatRial(inst.amount)}</span>
+                                  
+                                  {inst.isPaid ? (
+                                    <span className="text-[10px] text-emerald-600 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg font-bold">وصول کامل (۱۰۰٪)</span>
+                                  ) : (
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setInstPayModal(inst);
+                                          setInstPayAccountId("");
+                                          setInstPaySourceAccount(buyer?.name || "");
+                                          setInstPayDate(getTodayShamsiString());
+                                          setInstPayRef("");
+                                        }}
+                                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold cursor-pointer"
+                                      >
+                                        ثبت وصول قسط
+                                      </button>
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -2760,19 +3562,100 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
                                       >
                                         <Trash2 className="w-3.5 h-3.5" />
                                       </button>
-                                    </>
+                                    </div>
                                   )}
-                                  <span className="text-[10px] text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg font-bold">
-                                    {(inst.percentPaid || 0) > 0 ? `${inst.percentPaid}% پرداخت شده` : "در انتظار پرداخت"}
-                                  </span>
                                 </div>
-                              )}
-                            </div>
+                              </div>
+                            )}
                           </div>
-                        )}
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Modal for Paying an Installment (Requires Mandatory Receiving Account) */}
+            {instPayModal && (
+              <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
+                <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100 space-y-4 text-right">
+                  <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                    <h4 className="font-bold text-slate-900 text-sm">ثبت وصول قسط و واریز به حساب دریافتی شرکت</h4>
+                    <button
+                      type="button"
+                      onClick={() => setInstPayModal(null)}
+                      className="text-slate-400 hover:text-slate-600 font-bold"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="bg-slate-50 p-3 rounded-xl text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">عنوان قسط:</span>
+                      <span className="font-bold text-slate-900">{instPayModal.installmentName}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">مبلغ قسط:</span>
+                      <span className="font-extrabold font-mono text-emerald-700">{formatRial(instPayModal.amount)}</span>
+                    </div>
+                  </div>
+                  <form onSubmit={handlePayInstallment} className="space-y-3 text-xs">
+                    <div>
+                      <label className="text-[10px] font-bold text-emerald-800 block mb-1">حساب دریافتی (حساب شرکت) *</label>
+                      <select
+                        required
+                        value={instPayAccountId}
+                        onChange={e => setInstPayAccountId(e.target.value)}
+                        className="w-full bg-emerald-50 border border-emerald-300 rounded-xl px-3 py-2 text-xs font-bold"
+                      >
+                        <option value="">-- انتخاب اجباری بانک یا صندوق دریافتی شرکت --</option>
+                        {accountsList.map(acc => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.name} ({acc.type === "bank" ? "بانک" : "صندوق"} - موجودی: {formatRial(acc.balance)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-600 block mb-1">حساب مبدا (حساب طرف حسابی که واریزی انجام داده)</label>
+                      <input
+                        type="text"
+                        placeholder="نام بانک / شماره کارت خریدار واریزکننده"
+                        value={instPaySourceAccount}
+                        onChange={e => setInstPaySourceAccount(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-600 block mb-1">تاریخ وصول *</label>
+                        <ShamsiDatePicker
+                          required
+                          value={instPayDate}
+                          onChange={setInstPayDate}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-center"
+                        />
                       </div>
-                    );
-                  })}
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-600 block mb-1">شماره فیش / پیگیری</label>
+                        <input
+                          type="text"
+                          value={instPayRef}
+                          onChange={e => setInstPayRef(e.target.value)}
+                          placeholder="شماره ارجاع بانکی"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-2.5 text-xs font-bold cursor-pointer"
+                    >
+                      {isSubmitting ? "در حال ثبت..." : "تأیید وصول قسط و کسر از بدهی طرف قرارداد"}
+                    </button>
+                  </form>
                 </div>
               </div>
             )}
@@ -2781,92 +3664,176 @@ export default function ContractsAndImprests({ db, activeCompanyId, getApiUrl, o
       )}
 
       {/* --- SUB-TAB: ALERTS --- */}
-      {subTab === "alerts" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Quick Alert sender simulator */}
-          <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm self-start">
-            <h3 className="text-sm font-bold text-slate-900 mb-4 flex items-center gap-2">
-              <Bell className="w-4 h-4 text-indigo-600" />
-              ارسال پیامک اطلاع‌رسانی و یادآوری فوری
-            </h3>
-            
-            <div className="space-y-4 text-xs">
-              <p className="text-slate-500 font-light">این ماژول به وب‌سرویس پیامکی متصل است و به صورت خودکار سررسید اقساط یا قفل شدن تنخواه به علت عدم تسویه حساب را به اطلاع طرف‌های حساب می‌رساند.</p>
-              
-              <div className="p-3.5 bg-indigo-50 border border-indigo-150 rounded-xl space-y-2">
-                <h4 className="font-bold text-indigo-950">سناریوهای پیامکی تعریف شده:</h4>
-                <ul className="list-disc pr-4 space-y-1 font-light text-indigo-850 text-[11px]">
-                  <li>اعلام سررسید قسط قرارداد پیش‌فروش</li>
-                  <li>پیام هشدار کسر موجودی و قفل شدن تنخواه</li>
-                  <li>درخواست واریز علی‌الحساب پیمانکاران جزء</li>
-                </ul>
-              </div>
+      {subTab === "alerts" && (() => {
+        const filteredAlerts = alertsLogList.filter(al => {
+          if (alertTypeFilter !== "all" && al.type !== alertTypeFilter) return false;
+          if (alertSearch.trim()) {
+            const q = toEnglishDigits(alertSearch).trim().toLowerCase();
+            const matchPhone = toEnglishDigits(al.recipientPhone || "").toLowerCase().includes(q);
+            const matchMsg = (al.message || "").toLowerCase().includes(q);
+            if (!matchPhone && !matchMsg) return false;
+          }
+          return true;
+        });
 
-              {/* Alerts Log Preview list */}
-              <div className="border-t border-slate-100 pt-4 space-y-3">
-                <h4 className="font-bold text-slate-800">آمار ارسال‌های سیستمی امروز:</h4>
-                <div className="flex gap-4 text-center">
-                  <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                    <span className="text-[9px] text-slate-400 block font-bold">کل پیامک‌های موفق</span>
-                    <span className="font-extrabold text-slate-900 mt-1 block font-mono">
-                      {alertsLogList.length.toLocaleString("fa-IR")}
-                    </span>
-                  </div>
-                  <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
-                    <span className="text-[9px] text-slate-400 block font-bold">وضعیت پنل مخابرات</span>
-                    <span className="font-extrabold text-emerald-600 mt-1 block">متصل (سبز)</span>
+        const handlePrintAlerts = (mode: "after_filter" | "before_filter") => {
+          const source = mode === "after_filter" ? filteredAlerts : alertsLogList;
+          printStructuredReport({
+            title: "گزارش آرشیو پیامک‌ها و اطلاع‌رسانی‌های هوشمند",
+            mode,
+            filterDescription: mode === "after_filter" ? `جستجو: ${alertSearch || "همه"} | نوع پیامک: ${alertTypeFilter}` : undefined,
+            columns: [
+              { header: "ردیف", accessor: r => r.idx, align: "center" },
+              { header: "شماره گیرنده", accessor: r => r.phone, align: "center" },
+              { header: "نوع پیامک", accessor: r => r.type, align: "center" },
+              { header: "متن پیامک", accessor: r => r.message },
+              { header: "تاریخ ارسال", accessor: r => r.date, align: "center" },
+            ],
+            rows: source.map((al, idx) => ({
+              idx: (idx + 1).toLocaleString("fa-IR"),
+              phone: al.recipientPhone,
+              type: al.type === "installment" ? "قسط پیش‌فروش" : al.type === "check" ? "سررسید چک" : "تسویه تنخواه",
+              message: al.message,
+              date: al.sendDate
+            })),
+            summaryItems: [
+              { label: "تعداد پیامک‌ها", value: `${source.length.toLocaleString("fa-IR")} پیامک` }
+            ]
+          });
+        };
+
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Quick Alert sender simulator */}
+            <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm self-start">
+              <h3 className="text-sm font-bold text-slate-900 mb-4 flex items-center gap-2">
+                <Bell className="w-4 h-4 text-indigo-600" />
+                ارسال پیامک اطلاع‌رسانی و یادآوری فوری
+              </h3>
+              
+              <div className="space-y-4 text-xs">
+                <p className="text-slate-500 font-light">این ماژول به وب‌سرویس پیامکی متصل است و به صورت خودکار سررسید اقساط یا قفل شدن تنخواه به علت عدم تسویه حساب را به اطلاع طرف‌های حساب می‌رساند.</p>
+                
+                <div className="p-3.5 bg-indigo-50 border border-indigo-150 rounded-xl space-y-2">
+                  <h4 className="font-bold text-indigo-950">سناریوهای پیامکی تعریف شده:</h4>
+                  <ul className="list-disc pr-4 space-y-1 font-light text-indigo-850 text-[11px]">
+                    <li>اعلام سررسید قسط قرارداد پیش‌فروش</li>
+                    <li>پیام هشدار کسر موجودی و قفل شدن تنخواه</li>
+                    <li>درخواست واریز علی‌الحساب پیمانکاران جزء</li>
+                  </ul>
+                </div>
+
+                <div className="border-t border-slate-100 pt-4 space-y-3">
+                  <h4 className="font-bold text-slate-800">آمار ارسال‌های سیستمی امروز:</h4>
+                  <div className="flex gap-4 text-center">
+                    <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                      <span className="text-[9px] text-slate-400 block font-bold">کل پیامک‌های موفق</span>
+                      <span className="font-extrabold text-slate-900 mt-1 block font-mono">
+                        {alertsLogList.length.toLocaleString("fa-IR")}
+                      </span>
+                    </div>
+                    <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                      <span className="text-[9px] text-slate-400 block font-bold">وضعیت پنل مخابرات</span>
+                      <span className="font-extrabold text-emerald-600 mt-1 block">متصل (سبز)</span>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* Sent alerts logs table */}
-          <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm lg:col-span-2">
-            <h3 className="text-sm font-bold text-slate-900 mb-4">آرشیو و لاگ پیامک‌های مخابره شده هوشمند</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-right border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
-                    <th className="p-3">شماره گیرنده</th>
-                    <th className="p-3">نوع پیامک</th>
-                    <th className="p-3">متن کامل پیامک ارسالی</th>
-                    <th className="p-3 text-center">تاریخ ارسال</th>
-                    <th className="p-3 text-center">وضعیت دلیوری</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {alertsLogList.map(al => (
-                    <tr key={al.id} className="hover:bg-slate-50/50">
-                      <td className="p-3 font-mono text-slate-700">{al.recipientPhone}</td>
-                      <td className="p-3">
-                        <span className="px-2 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600 font-bold">
-                          {al.type === "installment" ? "قسط پیش‌فروش" :
-                           al.type === "check" ? "سررسید چک" : "تسویه تنخواه"}
-                        </span>
-                      </td>
-                      <td className="p-3 text-slate-600 leading-relaxed font-light">{al.message}</td>
-                      <td className="p-3 text-center text-slate-400 font-mono font-light">{al.sendDate}</td>
-                      <td className="p-3 text-center">
-                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-200 rounded text-[9px] font-bold">
-                          رسیده به گوشی
-                        </span>
-                      </td>
+            {/* Sent alerts logs table */}
+            <div className="bg-white border border-slate-150 rounded-2xl p-6 shadow-sm lg:col-span-2 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-sm font-bold text-slate-900">آرشیو و لاگ پیامک‌های مخابره شده هوشمند</h3>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handlePrintAlerts("after_filter")}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    چاپ نتایج فیلتر شده (بعد از فیلتر)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePrintAlerts("before_filter")}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    چاپ کل اطلاعات (قبل از فیلتر)
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-3">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={alertSearch}
+                      onChange={e => setAlertSearch(e.target.value)}
+                      placeholder="جستجو در شماره گیرنده یا متن پیامک..."
+                      className="w-full bg-white border border-slate-200 rounded-xl pr-9 pl-3 py-2 text-xs focus:outline-none"
+                    />
+                  </div>
+                  <select
+                    value={alertTypeFilter}
+                    onChange={e => setAlertTypeFilter(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                  >
+                    <option value="all">همه انواع پیامک</option>
+                    <option value="installment">قسط پیش‌فروش</option>
+                    <option value="check">سررسید چک</option>
+                    <option value="imprest_lock">تسویه تنخواه</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-right border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-150 text-slate-500 font-bold">
+                      <th className="p-3">شماره گیرنده</th>
+                      <th className="p-3">نوع پیامک</th>
+                      <th className="p-3">متن کامل پیامک ارسالی</th>
+                      <th className="p-3 text-center">تاریخ ارسال</th>
+                      <th className="p-3 text-center">وضعیت دلیوری</th>
                     </tr>
-                  ))}
-                  {alertsLogList.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="p-6 text-center text-slate-400 font-light">
-                        تاکنون پیامکی به صورت خودکار یا دستی ارسال نشده است. روی زنگوله طرف حساب‌ها کلیک کنید تا ارسال آزمایشی صورت گیرد.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredAlerts.map(al => (
+                      <tr key={al.id} className="hover:bg-slate-50/50">
+                        <td className="p-3 font-mono text-slate-700">{al.recipientPhone}</td>
+                        <td className="p-3">
+                          <span className="px-2 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600 font-bold">
+                            {al.type === "installment" ? "قسط پیش‌فروش" :
+                             al.type === "check" ? "سررسید چک" : "تسویه تنخواه"}
+                          </span>
+                        </td>
+                        <td className="p-3 text-slate-600 leading-relaxed font-light">{al.message}</td>
+                        <td className="p-3 text-center text-slate-400 font-mono font-light">{al.sendDate}</td>
+                        <td className="p-3 text-center">
+                          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-200 rounded text-[9px] font-bold">
+                            رسیده به گوشی
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {filteredAlerts.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="p-6 text-center text-slate-400 font-light">
+                          پیامکی یافت نشد.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Contact Detailed creation Modal */}
       {showContactModal && (

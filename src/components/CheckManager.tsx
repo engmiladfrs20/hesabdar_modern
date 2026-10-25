@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { CheckItem, Account, Project } from "../types";
-import { Clock, Plus, Search, Calendar, CheckSquare, RefreshCw, Landmark, AlertTriangle, Edit, Trash2 } from "lucide-react";
+import { Clock, Plus, Search, Calendar, CheckSquare, RefreshCw, Landmark, AlertTriangle, Edit, Trash2, Printer, Filter } from "lucide-react";
 import { motion } from "motion/react";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
 import { getTodayShamsiString } from "../utils/shamsi";
+import { printStructuredReport } from "../utils/printReport";
 
 interface CheckManagerProps {
   checks: CheckItem[];
@@ -26,6 +27,13 @@ export default function CheckManager({
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "passed">("all");
   const [isAddingCheck, setIsAddingCheck] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showAdvSearch, setShowAdvSearch] = useState(false);
+  const [advType, setAdvType] = useState<"all" | "incoming" | "outgoing">("all");
+  const [advProjectId, setAdvProjectId] = useState<string>("all");
+  const [advStartDate, setAdvStartDate] = useState("");
+  const [advEndDate, setAdvEndDate] = useState("");
+  const [advMinAmount, setAdvMinAmount] = useState("");
+  const [advMaxAmount, setAdvMaxAmount] = useState("");
 
   // New Check form state
   const [chkNumber, setChkNumber] = useState("");
@@ -114,16 +122,56 @@ export default function CheckManager({
 
   // Filter checks
   const filteredChecks = checks.filter(c => {
-    const matchesSearch = c.personName.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          c.checkNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          c.bankName.toLowerCase().includes(searchQuery.toLowerCase());
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q ||
+                          c.personName.toLowerCase().includes(q) || 
+                          c.checkNumber.toLowerCase().includes(q) ||
+                          c.bankName.toLowerCase().includes(q) ||
+                          (c.description && c.description.toLowerCase().includes(q));
 
     if (!matchesSearch) return false;
-
-    if (filterStatus === "pending") return c.status === "pending";
-    if (filterStatus === "passed") return c.status === "passed";
+    if (filterStatus === "pending" && c.status !== "pending") return false;
+    if (filterStatus === "passed" && c.status !== "passed") return false;
+    if (advType !== "all" && c.type !== advType) return false;
+    if (advProjectId !== "all" && c.projectId !== advProjectId) return false;
+    if (advStartDate && c.dueDate < advStartDate) return false;
+    if (advEndDate && c.dueDate > advEndDate) return false;
+    if (advMinAmount && c.amount < Number(advMinAmount)) return false;
+    if (advMaxAmount && c.amount > Number(advMaxAmount)) return false;
     return true;
   });
+
+  const handlePrintChecks = (mode: "before_filter" | "after_filter") => {
+    const sourceList = mode === "before_filter" ? checks : filteredChecks;
+    printStructuredReport({
+      title: "گزارش جامع سررسید و وضعیت چک‌های صیادی",
+      subtitle: mode === "before_filter" ? "چاپ کامل تمامی چک‌ها (قبل از اعمال فیلتر)" : "چاپ چک‌های انتخابی (بعد از اعمال فیلتر)",
+      filterSummary: mode === "after_filter" ? [
+        searchQuery ? `جستجو: ${searchQuery}` : "",
+        filterStatus !== "all" ? `وضعیت: ${filterStatus === "pending" ? "در جریان وصول" : "پاس شده"}` : "",
+        advType !== "all" ? `نوع چک: ${advType === "outgoing" ? "پرداختی" : "دریافتی"}` : "",
+        advStartDate ? `از تاریخ: ${advStartDate}` : "",
+        advEndDate ? `تا تاریخ: ${advEndDate}` : ""
+      ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده" : undefined,
+      columns: [
+        { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+        { header: "تاریخ سررسید", accessor: (c) => toFarsiDigits(c.dueDate) },
+        { header: "سریال صیادی", accessor: (c) => toFarsiDigits(c.checkNumber) },
+        { header: "بانک عهده", accessor: (c) => c.bankName },
+        { header: "نوع چک", accessor: (c) => c.type === "outgoing" ? "پرداختی (صادره)" : "دریافتی (وارده)" },
+        { header: "ذی‌نفع / واگذارنده", accessor: (c) => c.personName },
+        { header: "پروژه", accessor: (c) => projects.find(p => p.id === c.projectId)?.name || "عمومی" },
+        { header: "وضعیت", accessor: (c) => c.status === "passed" ? "پاس شده" : "در جریان وصول" },
+        { header: "مبلغ (ریال)", accessor: (c) => formatTomans(c.amount) }
+      ],
+      data: sourceList,
+      summaryItems: [
+        { label: "تعداد کل چک‌ها", value: `${toFarsiDigits(sourceList.length)} فقره` },
+        { label: "جمع چک‌های پرداختی", value: formatTomans(sourceList.filter(x => x.type === "outgoing").reduce((s, x) => s + x.amount, 0)) },
+        { label: "جمع چک‌های دریافتی", value: formatTomans(sourceList.filter(x => x.type === "incoming").reduce((s, x) => s + x.amount, 0)) }
+      ]
+    });
+  };
 
   return (
     <div className="space-y-6 text-right" dir="rtl">
@@ -279,38 +327,125 @@ export default function CheckManager({
 
       {/* Filter and Table list */}
       <div className="space-y-4">
-        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
-          <div className="flex gap-2 text-xs">
-            <button 
-              onClick={() => setFilterStatus("all")}
-              className={`px-3 py-1.5 rounded-lg border transition-all ${filterStatus === "all" ? "bg-slate-900 border-slate-900 text-white shadow-sm" : "bg-slate-50 border-slate-150 text-slate-600"}`}
-            >
-              همه چک‌ها
-            </button>
-            <button 
-              onClick={() => setFilterStatus("pending")}
-              className={`px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${filterStatus === "pending" ? "bg-amber-600 border-amber-600 text-white shadow-sm" : "bg-slate-50 border-slate-150 text-slate-600"}`}
-            >
-              در جریان وصول (سررسید معوق)
-            </button>
-            <button 
-              onClick={() => setFilterStatus("passed")}
-              className={`px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${filterStatus === "passed" ? "bg-emerald-600 border-emerald-600 text-white shadow-sm" : "bg-slate-50 border-slate-150 text-slate-600"}`}
-            >
-              پاس شده و وصول شده
-            </button>
+        <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm space-y-3">
+          <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3">
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button 
+                onClick={() => setFilterStatus("all")}
+                className={`px-3 py-1.5 rounded-lg border transition-all cursor-pointer ${filterStatus === "all" ? "bg-slate-900 border-slate-900 text-white shadow-sm" : "bg-slate-50 border-slate-150 text-slate-600"}`}
+              >
+                همه چک‌ها
+              </button>
+              <button 
+                onClick={() => setFilterStatus("pending")}
+                className={`px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1 cursor-pointer ${filterStatus === "pending" ? "bg-amber-600 border-amber-600 text-white shadow-sm" : "bg-slate-50 border-slate-150 text-slate-600"}`}
+              >
+                در جریان وصول (سررسید معوق)
+              </button>
+              <button 
+                onClick={() => setFilterStatus("passed")}
+                className={`px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1 cursor-pointer ${filterStatus === "passed" ? "bg-emerald-600 border-emerald-600 text-white shadow-sm" : "bg-slate-50 border-slate-150 text-slate-600"}`}
+              >
+                پاس شده و وصول شده
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative flex items-center flex-1 sm:flex-initial">
+                <input 
+                  type="text" 
+                  placeholder="جستجو بر اساس شماره چک، صادرکننده، بانک..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full sm:w-64 px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                />
+                <Search className="w-4 h-4 text-slate-400 absolute right-2.5" />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowAdvSearch(!showAdvSearch)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer transition-colors ${showAdvSearch ? "bg-amber-50 border-amber-300 text-amber-700" : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"}`}
+              >
+                <Filter className="w-3.5 h-3.5" />
+                جستجوی پیشرفته
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePrintChecks("before_filter")}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                title="چاپ تمامی چک‌ها قبل از اعمال فیلتر"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                چاپ (قبل از فیلتر)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePrintChecks("after_filter")}
+                className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                title="چاپ چک‌های فیلتر شده فعلی"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                چاپ (بعد از فیلتر)
+              </button>
+            </div>
           </div>
 
-          <div className="relative flex items-center">
-            <input 
-              type="text" 
-              placeholder="جستجو بر اساس شماره چک، صادرکننده..."
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              className="w-full sm:w-64 px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
-            />
-            <Search className="w-4 h-4 text-slate-400 absolute right-2.5" />
-          </div>
+          {showAdvSearch && (
+            <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3 text-xs bg-slate-50/70 p-3 rounded-xl">
+              <div>
+                <label className="block text-[10px] text-slate-500 font-bold mb-1">نوع برگه چک</label>
+                <select value={advType} onChange={e => setAdvType(e.target.value as any)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                  <option value="all">همه (پرداختی و دریافتی)</option>
+                  <option value="outgoing">چک پرداختی (صادره)</option>
+                  <option value="incoming">چک دریافتی (وارده)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-500 font-bold mb-1">پروژه مرتبط</label>
+                <select value={advProjectId} onChange={e => setAdvProjectId(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                  <option value="all">همه پروژه‌ها</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-500 font-bold mb-1">سررسید از تاریخ</label>
+                <ShamsiDatePicker value={advStartDate} onChange={setAdvStartDate} placeholder="۱۴۰۳/۰۱/۰۱" className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-500 font-bold mb-1">سررسید تا تاریخ</label>
+                <ShamsiDatePicker value={advEndDate} onChange={setAdvEndDate} placeholder="۱۴۰۳/۱۲/۲۹" className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+              </div>
+              <div>
+                <label className="block text-[10px] text-slate-500 font-bold mb-1">حداقل مبلغ (ریال)</label>
+                <FormattedAmountInput value={advMinAmount} onChange={setAdvMinAmount} placeholder="از مبلغ..." className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+              </div>
+              <div className="flex items-end gap-1.5">
+                <div className="flex-1">
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">حداکثر مبلغ (ریال)</label>
+                  <FormattedAmountInput value={advMaxAmount} onChange={setAdvMaxAmount} placeholder="تا مبلغ..." className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none" />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setFilterStatus("all");
+                    setAdvType("all");
+                    setAdvProjectId("all");
+                    setAdvStartDate("");
+                    setAdvEndDate("");
+                    setAdvMinAmount("");
+                    setAdvMaxAmount("");
+                  }}
+                  className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg font-bold text-[10px] cursor-pointer whitespace-nowrap"
+                >
+                  پاکسازی
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* List of Checks */}

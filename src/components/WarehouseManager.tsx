@@ -2,11 +2,12 @@ import React, { useState, useEffect } from "react";
 import { Material, MaterialTransaction, Project } from "../types";
 import { getTodayShamsiString } from "../utils/shamsi";
 import { toEnglishDigits } from "../utils/digits";
-import { Package, Search, Plus, ArrowUpRight, ArrowDownRight, Archive, Tag, ClipboardList, Layers, HelpCircle, Edit, Trash2 } from "lucide-react";
+import { Package, Search, Plus, ArrowUpRight, ArrowDownRight, Archive, Tag, ClipboardList, Layers, HelpCircle, Edit, Trash2, Printer, Filter } from "lucide-react";
 import { motion } from "motion/react";
 import { CONSTRUCTION_STAGES } from "../data/constructionStages";
 import { PREDEFINED_MATERIALS, PredefinedMaterial } from "../data/predefinedMaterials";
 import { FormattedAmountInput } from "./FormattedAmountInput";
+import { printStructuredReport } from "../utils/printReport";
 
 interface WarehouseManagerProps {
   materials: Material[];
@@ -27,6 +28,16 @@ export default function WarehouseManager({
 }: WarehouseManagerProps) {
   const [activeSubTab, setActiveSubTab] = useState<"inventory" | "transactions">("inventory");
   const [searchQuery, setSearchQuery] = useState("");
+  const [showAdvSearch, setShowAdvSearch] = useState(false);
+  const [advMatCategory, setAdvMatCategory] = useState("all");
+  const [advMatConsumption, setAdvMatConsumption] = useState("all");
+  const [advLowStockOnly, setAdvLowStockOnly] = useState(false);
+
+  const [txSearchQuery, setTxSearchQuery] = useState("");
+  const [showTxAdvSearch, setShowTxAdvSearch] = useState(false);
+  const [advTxType, setAdvTxType] = useState<"all" | "in" | "out">("all");
+  const [advTxProjectId, setAdvTxProjectId] = useState("all");
+
   const [isAddingMaterial, setIsAddingMaterial] = useState(false);
   const [isAddingTx, setIsAddingTx] = useState(false);
 
@@ -183,10 +194,88 @@ export default function WarehouseManager({
     setIsAddingTx(false);
   };
 
-  const filteredMaterials = materials.filter(m => 
-    m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    m.category.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredMaterials = materials.filter(m => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q ||
+      m.name.toLowerCase().includes(q) ||
+      m.category.toLowerCase().includes(q) ||
+      (m.code && m.code.toLowerCase().includes(q)) ||
+      (m.subCategory && m.subCategory.toLowerCase().includes(q));
+    if (!matchesSearch) return false;
+    if (advMatCategory !== "all" && m.category !== advMatCategory) return false;
+    if (advMatConsumption !== "all" && m.consumptionType !== advMatConsumption) return false;
+    if (advLowStockOnly && (m.minStock === undefined || m.stock >= m.minStock)) return false;
+    return true;
+  });
+
+  const filteredMaterialTransactions = materialTransactions.filter(tx => {
+    const mat = materials.find(m => m.id === tx.materialId);
+    const proj = projects.find(p => p.id === tx.projectId);
+    const q = txSearchQuery.toLowerCase();
+    const matchesSearch = !q ||
+      (mat && mat.name.toLowerCase().includes(q)) ||
+      (proj && proj.name.toLowerCase().includes(q)) ||
+      (tx.personName && tx.personName.toLowerCase().includes(q)) ||
+      (tx.description && tx.description.toLowerCase().includes(q));
+    if (!matchesSearch) return false;
+    if (advTxType !== "all" && tx.type !== advTxType) return false;
+    if (advTxProjectId !== "all" && tx.projectId !== advTxProjectId) return false;
+    return true;
+  });
+
+  const handlePrintInventory = (mode: "before_filter" | "after_filter") => {
+    const sourceList = mode === "before_filter" ? materials : filteredMaterials;
+    printStructuredReport({
+      title: "گزارش موجودی انبار مرکزی و مصالح کارگاهی",
+      subtitle: mode === "before_filter" ? "چاپ کامل موجودی کل کالاها (قبل از اعمال فیلتر)" : "چاپ موجودی کالاهای انتخابی (بعد از اعمال فیلتر)",
+      filterSummary: mode === "after_filter" ? [
+        searchQuery ? `جستجو: ${searchQuery}` : "",
+        advMatCategory !== "all" ? `گروه: ${advMatCategory}` : "",
+        advLowStockOnly ? "فقط اقلام دارای کسری موجودی" : ""
+      ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده" : undefined,
+      columns: [
+        { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+        { header: "کد کالا", accessor: (m) => m.code || "—" },
+        { header: "نام کالا / مصالح", accessor: (m) => m.name },
+        { header: "گروه", accessor: (m) => m.category },
+        { header: "موجودی فعلی", accessor: (m) => `${toFarsiDigits(m.stock)} ${m.unit}` },
+        { header: "نرخ میانگین (ریال)", accessor: (m) => formatTomans(m.averagePrice) },
+        { header: "ارزش کل موجودی (ریال)", accessor: (m) => formatTomans(m.stock * m.averagePrice) }
+      ],
+      data: sourceList,
+      summaryItems: [
+        { label: "تعداد اقلام کالا", value: `${toFarsiDigits(sourceList.length)} قلم` },
+        { label: "ارزش کل موجودی انبار", value: formatTomans(sourceList.reduce((s, m) => s + m.stock * m.averagePrice, 0)) }
+      ]
+    });
+  };
+
+  const handlePrintCardex = (mode: "before_filter" | "after_filter") => {
+    const sourceList = mode === "before_filter" ? materialTransactions : filteredMaterialTransactions;
+    printStructuredReport({
+      title: "گزارش دفتر کاردکس ورود و خروج مصالح انبار",
+      subtitle: mode === "before_filter" ? "چاپ کامل کلیه حواله‌های انبار (قبل از فیلتر)" : "چاپ حواله‌های فیلتر شده (بعد از فیلتر)",
+      filterSummary: mode === "after_filter" ? [
+        txSearchQuery ? `جستجو: ${txSearchQuery}` : "",
+        advTxType !== "all" ? `نوع حواله: ${advTxType === "in" ? "ورود به انبار" : "خروج از انبار"}` : ""
+      ].filter(Boolean).join(" | ") || "بدون فیلتر محدودکننده" : undefined,
+      columns: [
+        { header: "ردیف", accessor: (_, i) => toFarsiDigits(i + 1) },
+        { header: "تاریخ", accessor: (tx) => toFarsiDigits(tx.date) },
+        { header: "کالا / مصالح", accessor: (tx) => materials.find(m => m.id === tx.materialId)?.name || "—" },
+        { header: "پروژه", accessor: (tx) => projects.find(p => p.id === tx.projectId)?.name || "عمومی" },
+        { header: "نوع حواله", accessor: (tx) => tx.type === "in" ? "ورود به انبار" : "خروج به کارگاه" },
+        { header: "مقدار", accessor: (tx) => `${toFarsiDigits(tx.quantity)} ${materials.find(m => m.id === tx.materialId)?.unit || ""}` },
+        { header: "فی واحد (ریال)", accessor: (tx) => tx.unitPrice > 0 ? formatTomans(tx.unitPrice) : "—" },
+        { header: "تحویل‌گیرنده/دهنده", accessor: (tx) => tx.personName || "—" },
+        { header: "توضیحات", accessor: (tx) => tx.description || "—" }
+      ],
+      data: sourceList,
+      summaryItems: [
+        { label: "تعداد کل حواله‌ها", value: `${toFarsiDigits(sourceList.length)} فقره` }
+      ]
+    });
+  };
 
   return (
     <div className="space-y-6 text-right" dir="rtl">
@@ -225,34 +314,108 @@ export default function WarehouseManager({
         <div className="space-y-4">
           
           {/* Action Row */}
-          <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
-            <div className="relative flex items-center">
-              <input 
-                type="text" 
-                placeholder="جستجوی مصالح و دسته‌بندی..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="w-full sm:w-64 px-3 py-1.5 pr-8 bg-white border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
-              />
-              <Search className="w-4 h-4 text-slate-400 absolute right-2.5" />
+          <div className="bg-white p-4 rounded-xl border border-slate-150 shadow-2xs space-y-3">
+            <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex items-center flex-1 sm:flex-initial">
+                  <input 
+                    type="text" 
+                    placeholder="جستجوی نام مصالح، کد کالا، دسته‌بندی..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="w-full sm:w-64 px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                  />
+                  <Search className="w-4 h-4 text-slate-400 absolute right-2.5" />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAdvSearch(!showAdvSearch)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${showAdvSearch ? "bg-amber-50 border-amber-300 text-amber-700" : "bg-slate-50 border-slate-200 text-slate-600"}`}
+                >
+                  <Filter className="w-3.5 h-3.5" />
+                  جستجوی پیشرفته
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePrintInventory("before_filter")}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ (قبل از فیلتر)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePrintInventory("after_filter")}
+                  className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ (بعد از فیلتر)
+                </button>
+              </div>
+
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setIsAddingMaterial(!isAddingMaterial)}
+                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  تعریف کالای جدید
+                </button>
+                <button 
+                  onClick={() => setIsAddingTx(!isAddingTx)}
+                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-1 cursor-pointer"
+                >
+                  <ClipboardList className="w-3.5 h-3.5" />
+                  ثبت حواله ورود/خروج انبار
+                </button>
+              </div>
             </div>
 
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setIsAddingMaterial(!isAddingMaterial)}
-                className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-1 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                تعریف کالای جدید
-              </button>
-              <button 
-                onClick={() => setIsAddingTx(!isAddingTx)}
-                className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold shadow-sm flex items-center gap-1 cursor-pointer"
-              >
-                <ClipboardList className="w-3.5 h-3.5" />
-                ثبت حواله ورود/خروج انبار
-              </button>
-            </div>
+            {showAdvSearch && (
+              <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs bg-slate-50/70 p-3 rounded-xl">
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">گروه کالا</label>
+                  <select value={advMatCategory} onChange={e => setAdvMatCategory(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                    <option value="all">همه گروه‌ها</option>
+                    {Array.from(new Set(materials.map(m => m.category))).map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">نوع مصرف</label>
+                  <select value={advMatConsumption} onChange={e => setAdvMatConsumption(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                    <option value="all">همه موارد</option>
+                    <option value="common">مشترک (عمومی)</option>
+                    <option value="concrete">بتنی</option>
+                    <option value="steel">فلزی</option>
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <label className="flex items-center gap-2 cursor-pointer py-1.5">
+                    <input type="checkbox" checked={advLowStockOnly} onChange={e => setAdvLowStockOnly(e.target.checked)} className="rounded text-amber-600" />
+                    <span className="font-bold text-slate-700">فقط کالاهای دارای کسری موجودی</span>
+                  </label>
+                </div>
+                <div className="flex items-end justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery("");
+                      setAdvMatCategory("all");
+                      setAdvMatConsumption("all");
+                      setAdvLowStockOnly(false);
+                    }}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg font-bold text-[10px] cursor-pointer"
+                  >
+                    پاکسازی فیلترها
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* New Material Modal */}
@@ -719,7 +882,86 @@ export default function WarehouseManager({
 
       {/* Tab 2: Cardex Log */}
       {activeSubTab === "transactions" && (
-        <div className="bg-white rounded-2xl border border-slate-150 shadow-sm overflow-hidden">
+        <div className="space-y-4">
+          <div className="bg-white p-4 rounded-xl border border-slate-150 shadow-2xs space-y-3">
+            <div className="flex flex-wrap justify-between items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex items-center">
+                  <input
+                    type="text"
+                    placeholder="جستجو در کاردکس (نام مصالح، پروژه، شخص، شرح)..."
+                    value={txSearchQuery}
+                    onChange={e => setTxSearchQuery(e.target.value)}
+                    className="w-full sm:w-64 px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-amber-500"
+                  />
+                  <Search className="w-4 h-4 text-slate-400 absolute right-2.5" />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowTxAdvSearch(!showTxAdvSearch)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${showTxAdvSearch ? "bg-amber-50 border-amber-300 text-amber-700" : "bg-slate-50 border-slate-200 text-slate-600"}`}
+                >
+                  <Filter className="w-3.5 h-3.5" />
+                  فیلتر پیشرفته کاردکس
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handlePrintCardex("before_filter")}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ کاردکس (قبل از فیلتر)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePrintCardex("after_filter")}
+                  className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ کاردکس (بعد از فیلتر)
+                </button>
+              </div>
+            </div>
+
+            {showTxAdvSearch && (
+              <div className="pt-3 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-slate-50/70 p-3 rounded-xl">
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">نوع حواله</label>
+                  <select value={advTxType} onChange={e => setAdvTxType(e.target.value as any)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                    <option value="all">همه حواله‌ها (ورود و خروج)</option>
+                    <option value="in">ورود به انبار</option>
+                    <option value="out">خروج به کارگاه</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-500 font-bold mb-1">پروژه</label>
+                  <select value={advTxProjectId} onChange={e => setAdvTxProjectId(e.target.value)} className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg outline-none">
+                    <option value="all">همه پروژه‌ها</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="flex items-end justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTxSearchQuery("");
+                      setAdvTxType("all");
+                      setAdvTxProjectId("all");
+                    }}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg font-bold text-[10px] cursor-pointer"
+                  >
+                    پاکسازی فیلترها
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-150 shadow-sm overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-xs text-right border-collapse">
               <thead>
@@ -736,12 +978,12 @@ export default function WarehouseManager({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {materialTransactions.length === 0 ? (
+                {filteredMaterialTransactions.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="text-center py-12 text-slate-400 font-light text-sm">هیچ حواله ورود یا خروجی ثبت نشده است.</td>
+                    <td colSpan={9} className="text-center py-12 text-slate-400 font-light text-sm">هیچ حواله ورود یا خروجی مطابق با فیلتر یافت نشد.</td>
                   </tr>
                 ) : (
-                  materialTransactions.map(tx => {
+                  filteredMaterialTransactions.map(tx => {
                     const mat = materials.find(m => m.id === tx.materialId);
                     const proj = projects.find(p => p.id === tx.projectId);
                     const isIn = tx.type === "in";
@@ -796,6 +1038,7 @@ export default function WarehouseManager({
               </tbody>
             </table>
           </div>
+        </div>
         </div>
       )}
     </div>

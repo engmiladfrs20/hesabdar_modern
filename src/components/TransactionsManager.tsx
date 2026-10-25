@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from "react";
 import { Transaction, Account, Project, Contact } from "../types";
 import { getTodayShamsiString } from "../utils/shamsi";
 import { toEnglishDigits } from "../utils/digits";
-import { Plus, Landmark, DollarSign, Receipt, FileText, ArrowUpRight, ArrowDownRight, Paperclip, Search, Sparkles, SlidersHorizontal, Download, CreditCard, Edit, Trash2 } from "lucide-react";
+import { Plus, Landmark, DollarSign, Receipt, FileText, ArrowUpRight, ArrowDownRight, Paperclip, Search, Sparkles, SlidersHorizontal, Download, CreditCard, Edit, Trash2, Printer } from "lucide-react";
 import { motion } from "motion/react";
-import { CONSTRUCTION_STAGES } from "../data/constructionStages";
+import { CONSTRUCTION_STAGES, getProjectEffectiveStageTree, flattenStageTreeToStrings } from "../data/constructionStages";
+import { printStructuredReport } from "../utils/printReport";
 import SearchableCombobox, { ComboboxOption } from "./SearchableCombobox";
 import { ShamsiDatePicker } from "./ShamsiDatePicker";
 import { FormattedAmountInput } from "./FormattedAmountInput";
@@ -29,6 +30,7 @@ interface TransactionsManagerProps {
     invoiceDescription?: string;
     settlementMethod?: string;
     paymentStatus?: string;
+    sourceAccount?: string;
     destinationAccount?: string;
     receiptFileName?: string;
     receiptFileData?: string;
@@ -131,6 +133,16 @@ export default function TransactionsManager({
   const [filterMinAmount, setFilterMinAmount] = useState("");
   const [filterMaxAmount, setFilterMaxAmount] = useState("");
   const [filterPaymentStatus, setFilterPaymentStatus] = useState("all");
+  const [filterApprovalStatus, setFilterApprovalStatus] = useState("all");
+
+  // Approvals tab search & filter states
+  const [approvalSearchQuery, setApprovalSearchQuery] = useState("");
+  const [approvalTabFilter, setApprovalTabFilter] = useState<"all" | "pending_all" | "pending_unpaid" | "pending_paid" | "approved" | "rejected">("pending_all");
+  const [approvalProjectFilter, setApprovalProjectFilter] = useState("all");
+
+  // Accounts tab search & filter states
+  const [accountSearchQuery, setAccountSearchQuery] = useState("");
+  const [accountTypeFilter, setAccountTypeFilter] = useState("all");
 
   // New Transaction Form state
   const [txType, setTxType] = useState<"income" | "expense">("expense");
@@ -140,6 +152,7 @@ export default function TransactionsManager({
   const [txSubCat, setTxSubCat] = useState("");
   const [txAmount, setTxAmount] = useState("");
   const [txAccount, setTxAccount] = useState(accounts[0]?.id || "");
+  const [txCounterpartyAccount, setTxCounterpartyAccount] = useState("");
   const [txPerson, setTxPerson] = useState("");
   const [txDate, setTxDate] = useState(() => getTodayShamsiString());
   const [txInvoiceNum, setTxInvoiceNum] = useState("");
@@ -188,12 +201,14 @@ export default function TransactionsManager({
   const [selectedTxForPayments, setSelectedTxForPayments] = useState<Transaction | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payDate, setPayDate] = useState(() => getTodayShamsiString());
-  const [payAccount, setPayAccount] = useState(accounts[0]?.id || "");
+  const [payAccount, setPayAccount] = useState("");
+  const [payCounterpartyAccount, setPayCounterpartyAccount] = useState("");
   const [payInvoiceNum, setPayInvoiceNum] = useState("");
   const [payRef, setPayRef] = useState("");
   const [payDesc, setPayDesc] = useState("");
+  const [payModalError, setPayModalError] = useState<string | null>(null);
 
-  // Sync default project and account IDs when projects or accounts list updates
+  // Sync default project ID when projects list updates
   useEffect(() => {
     if (!txProjId && projects.length > 0) {
       setTxProjId(projects[0].id);
@@ -201,12 +216,11 @@ export default function TransactionsManager({
   }, [projects, txProjId]);
 
   useEffect(() => {
-    if (accounts.length > 0) {
+    if (accounts.length > 0 && txType === "expense") {
       if (!txAccount) setTxAccount(accounts[0].id);
       if (!payDocAccountId) setPayDocAccountId(accounts[0].id);
-      if (!payAccount) setPayAccount(accounts[0].id);
     }
-  }, [accounts, txAccount, payDocAccountId, payAccount]);
+  }, [accounts, txType]);
 
   // Keep selectedTxForPayments in sync with updated transactions prop
   useEffect(() => {
@@ -240,6 +254,7 @@ export default function TransactionsManager({
 
   const [showStageModal, setShowStageModal] = useState(false);
   const [stageModalName, setStageModalName] = useState("");
+  const [stageModalBranchId, setStageModalBranchId] = useState("");
 
   const handleQuickContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -261,12 +276,14 @@ export default function TransactionsManager({
   const handleQuickProjectSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!projectModalName.trim() || !onAddProject) return;
+    const defaultTree = getProjectEffectiveStageTree(null);
     const success = await onAddProject({
       name: projectModalName.trim(),
       address: projectModalAddress.trim(),
       budget: Number(projectModalBudget) || 0,
       totalArea: Number(projectModalArea) || 0,
-      stages: ["اسکلت بتنی", "سفت‌کاری", "نازک‌کاری", "تأسیسات"],
+      stageTree: defaultTree,
+      stages: flattenStageTreeToStrings(defaultTree),
       currentStage: "اسکلت بتنی",
       status: "active"
     });
@@ -304,13 +321,47 @@ export default function TransactionsManager({
     const activeProj = projects.find(p => p.id === txProjId);
     if (!activeProj) return;
 
-    const updatedStages = [...(activeProj.stages || []), stageModalName.trim()];
+    const currentTree = getProjectEffectiveStageTree(activeProj);
+    let updatedTree = [...currentTree];
+    let selectedFormattedLabel = stageModalName.trim();
+
+    if (stageModalBranchId && stageModalBranchId !== "new_branch") {
+      updatedTree = currentTree.map(branch => {
+        if (branch.id !== stageModalBranchId) return branch;
+        const nextIdx = (branch.subStages?.length || 0) + 1;
+        const branchNum = branch.id.replace(/\D/g, "") || "1";
+        const newCode = `${branchNum}-${nextIdx}`;
+        selectedFormattedLabel = `${newCode} ${stageModalName.trim()}`;
+        return {
+          ...branch,
+          subStages: [
+            ...(branch.subStages || []),
+            { id: `sub_${Date.now()}`, code: newCode, name: stageModalName.trim() }
+          ]
+        };
+      });
+    } else {
+      const nextBranchNum = currentTree.length + 1;
+      const newBranchId = `stg_${nextBranchNum}_${Date.now()}`;
+      const subCode = `${nextBranchNum}-1`;
+      selectedFormattedLabel = `${subCode} ${stageModalName.trim()}`;
+      updatedTree.push({
+        id: newBranchId,
+        name: `${nextBranchNum}. ${stageModalName.trim()}`,
+        subStages: [
+          { id: `sub_${Date.now()}`, code: subCode, name: stageModalName.trim() }
+        ]
+      });
+    }
+
+    const updatedStages = Array.from(new Set([...(activeProj.stages || []), stageModalName.trim(), ...flattenStageTreeToStrings(updatedTree)]));
     const success = await onAddProject({
       ...activeProj,
+      stageTree: updatedTree,
       stages: updatedStages
     });
     if (success !== false) {
-      setTxSubCat(stageModalName.trim());
+      setTxSubCat(selectedFormattedLabel);
       setShowStageModal(false);
     }
   };
@@ -326,19 +377,19 @@ export default function TransactionsManager({
 
   const handleExportCSV = () => {
     const csvRows: string[] = [];
-    // UTF-8 Byte Order Mark (BOM) to make Excel parse Persian characters properly
-    csvRows.push("\uFEFFتاریخ,طرف حساب,شرح تراکنش,دسته‌بندی,منبع مالی,مبلغ (ریال),وضعیت پرداخت");
+    csvRows.push("\uFEFFتاریخ,طرف حساب,شرح تراکنش,دسته‌بندی,حساب شرکت,حساب طرف مقابل,مبلغ (ریال),وضعیت پرداخت,وضعیت تأیید مدیریت");
 
     filteredTx.forEach(tx => {
       const acc = accounts.find(a => a.id === tx.accountId);
       const isIncome = tx.type === "income";
       const sign = isIncome ? "+" : "-";
       const statusText = tx.type === "income" ? "دریافت شده" : (tx.paymentStatus === "paid" ? "تسویه کامل" : (tx.paymentStatus === "partially_paid" ? "پرداخت جزئی" : "پرداخت نشده"));
-      
+      const approvalText = tx.type === "income" ? "—" : (tx.approvalStatus === "approved" ? "تأیید شده" : tx.approvalStatus === "rejected" ? "رد شده" : "در انتظار تأیید مدیریت");
       const cleanDesc = tx.description ? tx.description.replace(/"/g, '""') : "";
       const source = tx.isNonCash ? "تهاتر غیرنقدی" : (acc?.name || "صندوق");
+      const counterparty = (tx.type === "income" ? tx.sourceAccount : tx.destinationAccount) || "—";
 
-      csvRows.push(`"${tx.date}","${tx.personName}","${cleanDesc}","${tx.category}","${source}","${sign}${tx.amount}","${statusText}"`);
+      csvRows.push(`"${tx.date}","${tx.personName}","${cleanDesc}","${tx.category}","${source}","${counterparty}","${sign}${tx.amount}","${statusText}","${approvalText}"`);
     });
 
     const csvContent = "data:text/csv;charset=utf-8," + csvRows.join("\n");
@@ -382,21 +433,37 @@ export default function TransactionsManager({
     e.preventDefault();
     setFormError(null);
 
+    // Requirement 10: Mandatory receiving account selection when registering cash income
+    if (txType === "income" && !isNonCash) {
+      const hasMainAccount = !!txAccount && accounts.some(a => a.id === txAccount);
+      const hasSlipAccount = isAddingPaymentDoc && !!payDocAccountId && accounts.some(a => a.id === payDocAccountId);
+      const allExistingSlipsHaveAccount = newPayments.length > 0 && newPayments.every(p => !!p.accountId && accounts.some(a => a.id === p.accountId));
+      if (!hasMainAccount && !hasSlipAccount && !allExistingSlipsHaveAccount) {
+        setFormError("هنگام ثبت دریافتی (درآمد نقدی)، انتخاب «حساب دریافتی (حساب شرکت)» که مبلغ به آن بانک یا صندوق واریز شده اجباری است.");
+        return;
+      }
+    }
+
     // If user left the inline payment slip sub-form open with an amount entered, auto-include it
     let finalPayments = [...newPayments];
     const cleanPayDocAmt = Number(toEnglishDigits(payDocAmount).replace(/,/g, "")) || 0;
     if (isAddingPaymentDoc && cleanPayDocAmt > 0) {
+      if (txType === "income" && !isNonCash && !payDocAccountId && !txAccount) {
+        setFormError("لطفاً حساب دریافتی (بانک یا صندوق شرکت) را برای فیش دریافتی مشخص نمایید.");
+        return;
+      }
       finalPayments.push({
         id: "p_" + Date.now(),
         amount: cleanPayDocAmt,
         date: payDocDate || txDate || getTodayShamsiString(),
-        accountId: payDocAccountId || txAccount || accounts[0]?.id || "a1",
+        accountId: payDocAccountId || txAccount || (txType === "expense" ? (accounts[0]?.id || "a1") : ""),
         referenceNumber: payDocRefNum || "ثبت مستقیم",
         invoiceNumber: payDocInvoiceNum || txInvoiceNum || "",
         invoiceDescription: payDocDesc || txDesc || "",
         settlementMethod: payDocMethod,
         paymentStatus: payDocStatus,
-        destinationAccount: payDocDestAcc,
+        sourceAccount: txType === "income" ? (payDocDestAcc || txCounterpartyAccount) : undefined,
+        destinationAccount: txType === "expense" ? (payDocDestAcc || txCounterpartyAccount) : (payDocDestAcc || txCounterpartyAccount),
         receiptFileName: payDocReceiptName,
         receiptFileData: payDocReceiptData,
         description: payDocDesc || txDesc || ""
@@ -422,7 +489,14 @@ export default function TransactionsManager({
       return;
     }
 
+    const resolvedAccountId = txAccount || finalPayments[0]?.accountId || (txType === "expense" ? (accounts[0]?.id || "a1") : "");
+    if (txType === "income" && !isNonCash && !resolvedAccountId) {
+      setFormError("لطفاً حساب دریافتی (بانک یا صندوق شرکت) را به صورت اجباری انتخاب کنید.");
+      return;
+    }
+
     const validProjId = projects.some(p => p.id === txProjId) ? txProjId : (projects[0]?.id || "p1");
+    const existingEditingTx = editingTxId ? transactions.find(t => t.id === editingTxId) : null;
 
     const res = await onAddTransaction({
       id: editingTxId || undefined,
@@ -431,7 +505,9 @@ export default function TransactionsManager({
       category: txCat || (txType === "income" ? "پیش‌فروش" : "خرید مصالح"),
       subCategory: resolvedSubCat,
       amount: numericAmount,
-      accountId: txAccount || accounts[0]?.id || "a1",
+      accountId: resolvedAccountId,
+      sourceAccount: txType === "income" ? (txCounterpartyAccount || finalPayments[0]?.sourceAccount || finalPayments[0]?.destinationAccount || undefined) : undefined,
+      destinationAccount: txType === "expense" ? (txCounterpartyAccount || finalPayments[0]?.destinationAccount || undefined) : undefined,
       personName: resolvedPerson,
       date: txDate || getTodayShamsiString(),
       invoiceNumber: resolvedInvNum || undefined,
@@ -447,6 +523,8 @@ export default function TransactionsManager({
       attachmentName: attachedFileName || undefined,
       attachmentData: attachedFileData || undefined,
       paymentStatus: isNonCash ? "paid" : (txType === "expense" ? txPaymentStatus : "paid"),
+      // Requirement 9: Expense invoices ALWAYS start as "pending" (در انتظار تأیید مدیریت) until approved by manager, even if paid with slips attached
+      approvalStatus: txType === "expense" ? (existingEditingTx?.approvalStatus === "approved" ? "approved" : "pending") : "approved",
       payments: finalPayments
     });
 
@@ -458,6 +536,7 @@ export default function TransactionsManager({
     // Reset Form
     setTxAmount("");
     setTxPerson("");
+    setTxCounterpartyAccount("");
     setTxInvoiceNum("");
     setTxDesc("");
     setIsNonCash(false);
@@ -472,6 +551,7 @@ export default function TransactionsManager({
     setPayDocAmount("");
     setPayDocRefNum("");
     setPayDocInvoiceNum("");
+    setPayDocDestAcc("");
     setPayDocDesc("");
     setFormError(null);
     setActiveSubTab("logs");
@@ -485,6 +565,7 @@ export default function TransactionsManager({
     setTxSubCat(tx.subCategory || "");
     setTxAmount(String(tx.amount));
     setTxAccount(tx.accountId);
+    setTxCounterpartyAccount((tx.type === "income" ? tx.sourceAccount : tx.destinationAccount) || "");
     setTxPerson(tx.personName || "");
     setTxDate(tx.date);
     setTxInvoiceNum(tx.invoiceNumber || "");
@@ -537,14 +618,23 @@ export default function TransactionsManager({
 
   const handlePaymentSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setPayModalError(null);
     if (!selectedTxForPayments || !payAmount) return;
+
+    // Requirement 10: Mandatory receiving account when registering receipt/income slip
+    if (selectedTxForPayments.type === "income" && !payAccount) {
+      setPayModalError("انتخاب «حساب دریافتی (حساب شرکت)» جهت مشخص شدن بانک یا صندوق واریزی اجباری است.");
+      return;
+    }
 
     if (onPayTransaction) {
       onPayTransaction({
         transactionId: selectedTxForPayments.id,
         amount: Number(payAmount),
         date: payDate,
-        accountId: payAccount || accounts[0]?.id || undefined,
+        accountId: payAccount || (selectedTxForPayments.type === "expense" ? accounts[0]?.id : undefined),
+        sourceAccount: selectedTxForPayments.type === "income" ? payCounterpartyAccount || undefined : undefined,
+        destinationAccount: selectedTxForPayments.type === "expense" ? payCounterpartyAccount || undefined : payCounterpartyAccount || undefined,
         referenceNumber: payRef || undefined,
         invoiceNumber: payInvoiceNum || selectedTxForPayments.invoiceNumber || undefined,
         invoiceDescription: payDesc || selectedTxForPayments.description || undefined,
@@ -554,6 +644,7 @@ export default function TransactionsManager({
 
     // Reset Form
     setPayAmount("");
+    setPayCounterpartyAccount("");
     setPayInvoiceNum("");
     setPayRef("");
     setPayDesc("");
@@ -566,10 +657,15 @@ export default function TransactionsManager({
     if (!matchesPerson) return false;
 
     // 2. Search query
-    const matchesSearch = t.personName.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          t.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          t.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          (t.subCategory && t.subCategory.toLowerCase().includes(searchQuery.toLowerCase()));
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q ||
+                          t.personName.toLowerCase().includes(q) || 
+                          t.description.toLowerCase().includes(q) ||
+                          t.category.toLowerCase().includes(q) ||
+                          (t.invoiceNumber && t.invoiceNumber.toLowerCase().includes(q)) ||
+                          (t.subCategory && t.subCategory.toLowerCase().includes(q)) ||
+                          (t.sourceAccount && t.sourceAccount.toLowerCase().includes(q)) ||
+                          (t.destinationAccount && t.destinationAccount.toLowerCase().includes(q));
     if (!matchesSearch) return false;
 
     // 3. Filter type (tabs)
@@ -606,6 +702,14 @@ export default function TransactionsManager({
       if (filterPaymentStatus === "partially_paid" && status !== "partially_paid") return false;
     }
 
+    // 10. Manager Approval Status filter
+    if (filterApprovalStatus !== "all") {
+      const appSt = t.approvalStatus || "pending";
+      if (filterApprovalStatus === "pending" && (t.type !== "expense" || (appSt !== "pending" && !!t.approvalStatus))) return false;
+      if (filterApprovalStatus === "approved" && appSt !== "approved") return false;
+      if (filterApprovalStatus === "rejected" && appSt !== "rejected") return false;
+    }
+
     return true;
   });
 
@@ -618,9 +722,107 @@ export default function TransactionsManager({
     (filterProject !== "all" ? 1 : 0) +
     (filterMinAmount ? 1 : 0) +
     (filterMaxAmount ? 1 : 0) +
-    (filterPaymentStatus !== "all" ? 1 : 0);
+    (filterPaymentStatus !== "all" ? 1 : 0) +
+    (filterApprovalStatus !== "all" ? 1 : 0);
+
+  const handlePrintTransactions = (useFiltered: boolean) => {
+    const list = useFiltered ? filteredTx : transactions;
+    const sumInc = list.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+    const sumExp = list.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+    printStructuredReport({
+      title: "گزارش دفتر معین تراکنش‌ها، دریافت‌ها و پرداخت‌ها",
+      subtitle: useFiltered ? "گزارش بر اساس فیلترهای اعمال شده (بعد از فیلتر)" : "گزارش کامل تمامی تراکنش‌ها (قبل از فیلتر)",
+      filterSummary: useFiltered
+        ? `تعداد رکورد فیلتر شده: ${toFarsiDigits(list.length)} از ${toFarsiDigits(transactions.length)} | جستجو: ${searchQuery || "ندارد"} | شخص: ${personFilter === "all" ? "همه" : personFilter}`
+        : `کل تراکنش‌های ثبت شده در سیستم (${toFarsiDigits(transactions.length)} مورد)`,
+      columns: [
+        { header: "ردیف", key: "idx" },
+        { header: "شماره فاکتور", key: "inv" },
+        { header: "تاریخ", key: "date" },
+        { header: "طرف حساب", key: "person" },
+        { header: "نوع / دسته‌بندی", key: "cat" },
+        { header: "شرح تراکنش", key: "desc" },
+        { header: "حساب شرکت / طرف مقابل", key: "acc" },
+        { header: "وضعیت تأیید و تسویه", key: "status" },
+        { header: "مبلغ (ریال)", key: "amount" }
+      ],
+      rows: list.map((tx, i) => {
+        const acc = accounts.find(a => a.id === tx.accountId);
+        const isInc = tx.type === "income";
+        const dispInv = tx.invoiceNumber || tx.payments?.find(p => p.invoiceNumber)?.invoiceNumber || "—";
+        const cpAcc = isInc ? tx.sourceAccount : tx.destinationAccount;
+        const accLabel = tx.isNonCash
+          ? "تهاتر غیرنقدی"
+          : `${isInc ? "دریافتی:" : "مبدا:"} ${acc?.name || "صندوق"}${cpAcc ? ` | ${isInc ? "مبدا:" : "مقصد:"} ${cpAcc}` : ""}`;
+        const appLabel = tx.type === "expense"
+          ? (tx.approvalStatus === "approved" ? "تأیید مدیریت ✓" : tx.approvalStatus === "rejected" ? "رد شده ❌" : "تأیید نشده ⏳")
+          : "دریافت قطعی";
+        const paySt = tx.type === "income" ? "دریافت شده" : (tx.paymentStatus === "paid" ? "تسویه کامل" : tx.paymentStatus === "partially_paid" ? "پرداخت جزئی" : "پرداخت نشده");
+        return {
+          idx: toFarsiDigits(i + 1),
+          inv: toFarsiDigits(dispInv),
+          date: toFarsiDigits(tx.date),
+          person: tx.personName,
+          cat: `${isInc ? "دریافتی" : "هزینه"} - ${tx.category}${tx.subCategory ? ` (${tx.subCategory})` : ""}`,
+          desc: tx.description,
+          acc: accLabel,
+          status: `${paySt} (${appLabel})`,
+          amount: `${isInc ? "+" : "-"}${formatTomans(tx.amount)}`
+        };
+      }),
+      summaryItems: [
+        { label: "تعداد تراکنش‌ها", value: `${toFarsiDigits(list.length)} فقره` },
+        { label: "جمع دریافتی‌ها (درآمد)", value: formatTomans(sumInc) },
+        { label: "جمع پرداختی‌ها (هزینه)", value: formatTomans(sumExp) },
+        { label: "تراز خالص دوره", value: formatTomans(sumInc - sumExp) }
+      ]
+    });
+  };
+
+  const filteredAccounts = accounts.filter(acc => {
+    if (accountTypeFilter !== "all" && acc.type !== accountTypeFilter) return false;
+    if (accountSearchQuery.trim()) {
+      const q = accountSearchQuery.toLowerCase();
+      const matchName = acc.name.toLowerCase().includes(q);
+      const matchNum = (acc.accountNumber || "").toLowerCase().includes(q);
+      const matchBank = (acc.bankName || "").toLowerCase().includes(q);
+      if (!matchName && !matchNum && !matchBank) return false;
+    }
+    return true;
+  });
+
+  const handlePrintAccounts = (useFiltered: boolean) => {
+    const list = useFiltered ? filteredAccounts : accounts;
+    const sumBal = list.reduce((s, a) => s + a.balance, 0);
+    printStructuredReport({
+      title: "گزارش حساب‌های بانکی، صندوق‌ها و تنخواه‌گردان‌ها",
+      subtitle: useFiltered ? "گزارش حساب‌های فیلتر شده (بعد از فیلتر)" : "گزارش کل منابع مالی (قبل از فیلتر)",
+      filterSummary: useFiltered
+        ? `تعداد حساب فیلتر شده: ${toFarsiDigits(list.length)} از ${toFarsiDigits(accounts.length)}`
+        : `کل حساب‌های تعریف شده (${toFarsiDigits(accounts.length)} حساب)`,
+      columns: [
+        { header: "ردیف", key: "idx" },
+        { header: "نام حساب / صندوق", key: "name" },
+        { header: "نوع حساب", key: "type" },
+        { header: "شماره حساب / کارت", key: "num" },
+        { header: "موجودی فعلی (ریال)", key: "balance" }
+      ],
+      rows: list.map((a, i) => ({
+        idx: toFarsiDigits(i + 1),
+        name: a.name,
+        type: a.typeName,
+        num: toFarsiDigits(a.accountNumber || "—"),
+        balance: formatTomans(a.balance)
+      })),
+      summaryItems: [
+        { label: "تعداد حساب‌ها", value: `${toFarsiDigits(list.length)} حساب` },
+        { label: "مجموع موجودی نقدی", value: formatTomans(sumBal) }
+      ]
+    });
+  };
 
   const activeProject = projects.find(p => p.id === txProjId);
+  const activeProjectStageTree = getProjectEffectiveStageTree(activeProject);
 
   const selectedContact = (contacts || []).find(c => c.name.trim() === txPerson.trim());
   const isBarterContact = !!(selectedContact?.paymentMethod === "barter" && selectedContact?.barterUnits && selectedContact.barterUnits.length > 0);
@@ -649,25 +851,41 @@ export default function TransactionsManager({
   const stageOptions: ComboboxOption[] = [
     { value: "", label: "بدون فاز ساخت (عمومی)" }
   ];
+  const addedStageValues = new Set<string>([""]);
   if (activeProject) {
     (activeProject.stages || []).forEach(st => {
-      stageOptions.push({
-        value: st,
-        label: st,
-        group: "مراحل اصلی پروژه انتخابی"
-      });
+      if (!addedStageValues.has(st)) {
+        addedStageValues.add(st);
+        stageOptions.push({
+          value: st,
+          label: st,
+          group: "مراحل اصلی پروژه انتخابی"
+        });
+      }
     });
   }
-  CONSTRUCTION_STAGES.forEach(cat => {
+  activeProjectStageTree.forEach(cat => {
+    const cleanBranchName = cat.name.replace(/^\d+\.\s*/, "");
+    if (!addedStageValues.has(cleanBranchName)) {
+      addedStageValues.add(cleanBranchName);
+      stageOptions.push({
+        value: cleanBranchName,
+        label: `🔹 شاخه اصلی: ${cat.name}`,
+        group: cat.name
+      });
+    }
     (cat.subStages || []).forEach(sub => {
       const formatted = sub.code 
         ? `${sub.code} ${sub.name}` 
-        : `${cat.name.replace(/^\d+\.\s*/, "")} - ${sub.name}`;
-      stageOptions.push({
-        value: formatted,
-        label: formatted,
-        group: cat.name
-      });
+        : `${cleanBranchName} - ${sub.name}`;
+      if (!addedStageValues.has(formatted)) {
+        addedStageValues.add(formatted);
+        stageOptions.push({
+          value: formatted,
+          label: formatted,
+          group: cat.name
+        });
+      }
     });
   });
 
@@ -828,7 +1046,7 @@ export default function TransactionsManager({
                 </button>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+              <div className="flex flex-wrap gap-2 items-center">
                 <div className="flex items-center gap-1.5 text-xs">
                   <span className="text-slate-400 font-bold whitespace-nowrap">فیلتر طرف حساب:</span>
                   <select
@@ -870,6 +1088,26 @@ export default function TransactionsManager({
                       {toFarsiDigits(activeFiltersCount)}
                     </span>
                   )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePrintTransactions(true)}
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 border border-emerald-200 shadow-xs cursor-pointer"
+                  title="چاپ رکوردهای فیلتر شده فعلی"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ بعد از فیلتر ({toFarsiDigits(filteredTx.length)})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePrintTransactions(false)}
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 border border-slate-200 shadow-xs cursor-pointer"
+                  title="چاپ کل تراکنش‌ها بدون فیلتر"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  چاپ کل (قبل از فیلتر)
                 </button>
 
                 <button
@@ -936,14 +1174,14 @@ export default function TransactionsManager({
                   </div>
                 </div>
 
-                {/* Column 3: Material & Payment Status */}
+                {/* Column 3: Material, Payment Status & Approval Status */}
                 <div className="space-y-1.5">
-                  <span className="text-slate-500 font-bold block">نوع مصالح و وضعیت پرداخت</span>
-                  <div className="grid grid-cols-2 gap-2">
+                  <span className="text-slate-500 font-bold block">مصالح، وضعیت پرداخت و تأیید مدیر</span>
+                  <div className="grid grid-cols-3 gap-1.5">
                     <select
                       value={filterMaterial}
                       onChange={e => setFilterMaterial(e.target.value)}
-                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium"
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium"
                     >
                       <option value="all">همه مصالح</option>
                       <option value="سیمان">سیمان</option>
@@ -963,12 +1201,22 @@ export default function TransactionsManager({
                     <select
                       value={filterPaymentStatus}
                       onChange={e => setFilterPaymentStatus(e.target.value)}
-                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium"
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium"
                     >
-                      <option value="all">همه وضعیت‌ها</option>
+                      <option value="all">همه پرداخت‌ها</option>
                       <option value="paid">تسویه کامل</option>
-                      <option value="unpaid">پرداخت‌نشده (نسیه)</option>
-                      <option value="partially_paid">پرداخت مرحله‌ای</option>
+                      <option value="unpaid">پرداخت‌نشده</option>
+                      <option value="partially_paid">پرداخت جزئی</option>
+                    </select>
+                    <select
+                      value={filterApprovalStatus}
+                      onChange={e => setFilterApprovalStatus(e.target.value)}
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500 font-medium"
+                    >
+                      <option value="all">وضعیت تأیید</option>
+                      <option value="pending">تأیید نشده (منتظر مدیر)</option>
+                      <option value="approved">تأیید شده</option>
+                      <option value="rejected">رد شده</option>
                     </select>
                   </div>
                 </div>
@@ -1005,6 +1253,7 @@ export default function TransactionsManager({
                           setFilterMinAmount("");
                           setFilterMaxAmount("");
                           setFilterPaymentStatus("all");
+                          setFilterApprovalStatus("all");
                         }}
                         className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 hover:text-rose-700 rounded-xl transition-all font-bold whitespace-nowrap cursor-pointer border border-rose-100"
                         title="حذف همه فیلترها"
@@ -1030,9 +1279,9 @@ export default function TransactionsManager({
                     <th className="p-4">طرف حساب</th>
                     <th className="p-4">شرح فاکتور / تراکنش</th>
                     <th className="p-4">دسته بندی</th>
-                    <th className="p-4">منبع مالی</th>
+                    <th className="p-4">حساب شرکت / حساب طرف حساب</th>
                     <th className="p-4 text-left">مبلغ (ریال)</th>
-                    <th className="p-4 text-center">وضعیت پرداخت</th>
+                    <th className="p-4 text-center">وضعیت تأیید مدیر و پرداخت</th>
                     <th className="p-4 text-center">بایگانی (ضمیمه)</th>
                     <th className="p-4 text-center">عملیات</th>
                   </tr>
@@ -1053,6 +1302,9 @@ export default function TransactionsManager({
                       const remainingToPay = Math.max(0, maxPayable - totalPaid);
                       const paymentStatus = tx.paymentStatus || (tx.type === "income" ? "paid" : "unpaid");
                       const displayInvNum = tx.invoiceNumber || tx.payments?.find(p => p.invoiceNumber)?.invoiceNumber || "—";
+                      const counterpartyAcc = isIncome
+                        ? (tx.sourceAccount || tx.payments?.find(p => p.sourceAccount || p.destinationAccount)?.sourceAccount || tx.payments?.find(p => p.destinationAccount)?.destinationAccount)
+                        : (tx.destinationAccount || tx.payments?.find(p => p.destinationAccount)?.destinationAccount);
 
                       return (
                         <tr key={tx.id} className="hover:bg-slate-50/60 transition-colors">
@@ -1068,7 +1320,24 @@ export default function TransactionsManager({
                               {tx.category} {tx.subCategory && `(${tx.subCategory})`}
                             </span>
                           </td>
-                          <td className="p-4 text-slate-500 font-light">{tx.isNonCash ? "تهاتر غیرنقدی" : acc?.name || "صندوق"}</td>
+                          <td className="p-4 text-slate-600 text-[11px]">
+                            {tx.isNonCash ? (
+                              <span className="text-amber-700 font-bold">تهاتر غیرنقدی</span>
+                            ) : (
+                              <div className="space-y-0.5">
+                                <div>
+                                  <span className="text-[9px] text-slate-400 font-bold">{isIncome ? "حساب دریافتی (شرکت): " : "منبع مالی (شرکت): "}</span>
+                                  <strong className="text-slate-800">{acc?.name || "صندوق"}</strong>
+                                </div>
+                                {counterpartyAcc && (
+                                  <div>
+                                    <span className="text-[9px] text-slate-400 font-bold">{isIncome ? "حساب مبدا (واریزکننده): " : "حساب مقصد (گیرنده): "}</span>
+                                    <span className="font-mono text-indigo-700">{toFarsiDigits(counterpartyAcc)}</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
                           <td className={`p-4 font-bold text-left text-sm ${isIncome ? "text-emerald-600" : "text-rose-600"}`}>
                             {isIncome ? "+" : "-"}{formatTomans(tx.amount)}
                           </td>
@@ -1077,15 +1346,17 @@ export default function TransactionsManager({
                               <div className="mb-2">
                                 {tx.approvalStatus === "approved" ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-150 text-[9px] font-black" title={`تأیید کننده: ${tx.approvedBy || "مدیر ارشد"}`}>
-                                    ✓ تأیید شده {tx.approvedAmount !== undefined && `(${formatTomans(tx.approvedAmount)})`}
+                                    ✓ تأیید شده توسط مدیریت {tx.approvedAmount !== undefined && `(${formatTomans(tx.approvedAmount)})`}
                                   </span>
                                 ) : tx.approvalStatus === "rejected" ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-150 text-[9px] font-black">
-                                    ❌ رد شده
+                                    ❌ رد شده توسط مدیریت
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-50 text-amber-700 border border-amber-150 text-[9px] font-black animate-pulse">
-                                    ⏳ منتظر تأیید مدیر
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-50 text-amber-800 border border-amber-200 text-[9px] font-black animate-pulse">
+                                    {(paymentStatus === "paid" || totalPaid > 0)
+                                      ? "⏳ تأیید نشده (منتظر رویت و تأیید فاکتور/فیش توسط مدیر)"
+                                      : "⏳ تأیید نشده (منتظر تأیید مدیریت جهت پرداخت)"}
                                   </span>
                                 )}
                               </div>
@@ -1098,7 +1369,12 @@ export default function TransactionsManager({
                                 </span>
                                 <button
                                   type="button"
-                                  onClick={() => setSelectedTxForPayments(tx)}
+                                  onClick={() => {
+                                    setPayAccount(tx.accountId || "");
+                                    setPayCounterpartyAccount(tx.sourceAccount || "");
+                                    setPayModalError(null);
+                                    setSelectedTxForPayments(tx);
+                                  }}
                                   className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5 cursor-pointer"
                                 >
                                   مشاهده/ثبت اسناد دریافت
@@ -1112,7 +1388,7 @@ export default function TransactionsManager({
                               <div className="flex flex-col items-center gap-1">
                                 {paymentStatus === "paid" || remainingToPay <= 0 ? (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[10px] font-bold">
-                                    تسویه کامل
+                                    فیش ثبت شده / تسویه کامل
                                   </span>
                                 ) : paymentStatus === "partially_paid" ? (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-150 text-[10px] font-bold">
@@ -1126,7 +1402,12 @@ export default function TransactionsManager({
                                 
                                 <button
                                   type="button"
-                                  onClick={() => setSelectedTxForPayments(tx)}
+                                  onClick={() => {
+                                    setPayAccount(tx.accountId || accounts[0]?.id || "");
+                                    setPayCounterpartyAccount(tx.destinationAccount || "");
+                                    setPayModalError(null);
+                                    setSelectedTxForPayments(tx);
+                                  }}
                                   className="mt-1 px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[9px] font-bold border border-indigo-100 transition-colors flex items-center gap-0.5 cursor-pointer"
                                 >
                                   {paymentStatus === "paid" ? "مشاهده اسناد پرداخت" : "ثبت/مشاهده پرداخت‌ها"}
@@ -1185,15 +1466,54 @@ export default function TransactionsManager({
       {/* Tab 2: Accounts Summary */}
       {activeSubTab === "accounts" && (
         <div className="space-y-6">
-          <div className="flex justify-between items-center">
+          <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3">
             <h3 className="text-sm font-bold text-slate-800">لیست بانک‌ها، صندوق‌ها و صاحبان سرمایه</h3>
-            <button 
-              onClick={() => setIsAddingAcc(!isAddingAcc)}
-              className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs transition-colors flex items-center gap-1"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              تعریف منبع مالی جدید
-            </button>
+            <div className="flex flex-wrap gap-2 items-center text-xs">
+              <div className="relative flex items-center">
+                <input
+                  type="text"
+                  placeholder="جستجوی نام حساب یا شماره کارت..."
+                  value={accountSearchQuery}
+                  onChange={e => setAccountSearchQuery(e.target.value)}
+                  className="px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-indigo-500"
+                />
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5" />
+              </div>
+              <select
+                value={accountTypeFilter}
+                onChange={e => setAccountTypeFilter(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-indigo-500"
+              >
+                <option value="all">همه انواع حساب</option>
+                <option value="bank">بانک تجاری</option>
+                <option value="petty_cash">تنخواه گردان</option>
+                <option value="cash">صندوق نقد</option>
+                <option value="investor">آورده سرمایه‌گذار</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => handlePrintAccounts(true)}
+                className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 border border-emerald-200 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                چاپ بعد از فیلتر ({toFarsiDigits(filteredAccounts.length)})
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePrintAccounts(false)}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 border border-slate-200 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                چاپ کل (قبل از فیلتر)
+              </button>
+              <button 
+                onClick={() => setIsAddingAcc(!isAddingAcc)}
+                className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs transition-colors flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                تعریف منبع مالی جدید
+              </button>
+            </div>
           </div>
 
           {/* Add Account Modal */}
@@ -1278,7 +1598,7 @@ export default function TransactionsManager({
 
           {/* Accounts Grid */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {accounts.map(acc => {
+            {filteredAccounts.map(acc => {
               let iconColor = "bg-indigo-50 text-indigo-600";
               if (acc.type === "petty_cash") iconColor = "bg-amber-50 text-amber-600";
               if (acc.type === "investor") iconColor = "bg-emerald-50 text-emerald-600";
@@ -1420,14 +1740,27 @@ export default function TransactionsManager({
                     <div className="grid grid-cols-2 gap-2">
                       <button 
                         type="button"
-                        onClick={() => setTxType("expense")}
+                        onClick={() => {
+                          setTxType("expense");
+                          setTxCat("خرید مصالح");
+                          if (!txAccount && accounts.length > 0) setTxAccount(accounts[0].id);
+                          if (!payDocAccountId && accounts.length > 0) setPayDocAccountId(accounts[0].id);
+                        }}
                         className={`py-2 rounded-xl border text-center font-bold transition-all cursor-pointer ${txType === "expense" ? "bg-rose-500 border-rose-500 text-white shadow-xs" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"}`}
                       >
                         پرداختی (هزینه کارگاه)
                       </button>
                       <button 
                         type="button"
-                        onClick={() => setTxType("income")}
+                        onClick={() => {
+                          setTxType("income");
+                          setTxCat("پیش‌فروش");
+                          // Requirement 10: Force explicit selection of receiving account when registering income
+                          if (!editingTxId) {
+                            setTxAccount("");
+                            setPayDocAccountId("");
+                          }
+                        }}
                         className={`py-2 rounded-xl border text-center font-bold transition-all cursor-pointer ${txType === "income" ? "bg-emerald-500 border-emerald-500 text-white shadow-xs" : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"}`}
                       >
                         دریافتی (درآمد/سرمایه)
@@ -1513,6 +1846,77 @@ export default function TransactionsManager({
                     />
                   </div>
 
+                  {/* Requirement 8 & 10: Main Form Account Selectors (حساب دریافتی شرکت / حساب مبدا طرف حساب) */}
+                  {!isNonCash && (
+                    <div className="col-span-full grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-white border border-indigo-100 rounded-xl shadow-2xs">
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center">
+                          <label className="text-slate-700 font-bold text-[11px]">
+                            {txType === "income" ? (
+                              <>حساب دریافتی (حساب شرکت) <span className="text-rose-500 font-black">* (اجباری)</span></>
+                            ) : (
+                              "منبع مالی (حساب مبدا شرکت)"
+                            )}
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAccountModalName("");
+                              setAccountModalBankName("");
+                              setAccountModalNumber("");
+                              setAccountModalBalance("0");
+                              setShowAccountModal(true);
+                            }}
+                            className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold cursor-pointer"
+                          >
+                            + تعریف حساب جدید
+                          </button>
+                        </div>
+                        <select
+                          value={txAccount}
+                          onChange={e => {
+                            setTxAccount(e.target.value);
+                            if (!payDocAccountId) setPayDocAccountId(e.target.value);
+                          }}
+                          className={`w-full px-3 py-2 bg-slate-50 border rounded-xl outline-none text-xs font-medium ${
+                            txType === "income" && !txAccount ? "border-amber-400 bg-amber-50/40 text-amber-900" : "border-slate-200 focus:border-indigo-500"
+                          }`}
+                        >
+                          {txType === "income" && (
+                            <option value="">-- انتخاب بانک یا صندوق دریافتی شرکت (اجباری) --</option>
+                          )}
+                          {accounts.map(acc => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.name} ({acc.typeName} - موجودی: {formatTomans(acc.balance)})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-slate-700 font-bold text-[11px] block">
+                          {txType === "income"
+                            ? "حساب مبدا (حساب طرف حسابی که واریزی انجام داده)"
+                            : "حساب مقصد (حساب طرف حساب دریافت‌کننده)"}
+                        </label>
+                        <input
+                          type="text"
+                          value={txCounterpartyAccount}
+                          onChange={e => {
+                            setTxCounterpartyAccount(e.target.value);
+                            if (!payDocDestAcc) setPayDocDestAcc(e.target.value);
+                          }}
+                          placeholder={
+                            txType === "income"
+                              ? "شماره کارت/حساب یا نام بانک طرف حساب واریزکننده..."
+                              : "شماره کارت/شبا یا حساب مقصد طرف حساب..."
+                          }
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-indigo-500 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Amount */}
                   <div className="space-y-1.5 col-span-full">
                     <label className="text-slate-500 font-semibold">مبلغ سند فاکتور (ریال)</label>
@@ -1584,9 +1988,12 @@ export default function TransactionsManager({
                         onChange={e => setTxPaymentStatus(e.target.value as any)}
                         className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:border-indigo-500"
                       >
-                        <option value="paid">تسویه کامل نقدی (پرداخت شده)</option>
-                        <option value="unpaid">پرداخت‌نشده / نسیه (ثبت در معین شخص به عنوان بدهی کارگاه)</option>
+                        <option value="paid">تسویه کامل نقدی (پرداخت شده - نیازمند رویت و تأیید نهایی مدیریت)</option>
+                        <option value="unpaid">پرداخت‌نشده / نسیه (منتظر تأیید مدیریت جهت پرداخت و ثبت در معین شخص)</option>
                       </select>
+                      <p className="text-[10px] text-amber-700 font-bold bg-amber-50 border border-amber-150 px-2.5 py-1.5 rounded-lg">
+                        💡 توجه: کلیه فاکتورهای هزینه‌ای (حتی در صورت پرداخت همزمان و ثبت فیش) ابتدا در وضعیت «در انتظار تأیید مدیریت» قرار می‌گیرند تا مدیر رویت و تأیید نماید.
+                      </p>
                     </div>
                   )}
 
@@ -1703,9 +2110,10 @@ export default function TransactionsManager({
                         
                         setIsAddingPaymentDoc(!isAddingPaymentDoc);
                         setPayDocAmount(String(remaining > 0 ? remaining : ""));
+                        setPayDocAccountId(txAccount || (txType === "expense" ? (accounts[0]?.id || "") : ""));
                         setPayDocRefNum("");
                         setPayDocInvoiceNum(txInvoiceNum || "");
-                        setPayDocDestAcc("");
+                        setPayDocDestAcc(txCounterpartyAccount || "");
                         setPayDocReceiptName("");
                         setPayDocReceiptData("");
                         setPayDocDesc(txDesc || "");
@@ -1719,15 +2127,17 @@ export default function TransactionsManager({
                   {isAddingPaymentDoc && (
                     <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3.5 text-xs shadow-md">
                       <div className="border-b border-slate-100 pb-1.5 mb-1 flex items-center justify-between">
-                        <span className="font-extrabold text-[10px] text-indigo-900">فرم افزودن فیش واریزی یا سند پرداخت بانکی</span>
+                        <span className="font-extrabold text-[10px] text-indigo-900">
+                          {txType === "income" ? "فرم ثبت فیش دریافتی (واریز به حساب شرکت)" : "فرم افزودن فیش واریزی یا سند پرداخت بانکی"}
+                        </span>
                         <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-md font-mono font-bold text-[10px]">
-                          ردیف پرداخت: {toFarsiDigits(newPayments.length + 1)}
+                          ردیف فیش: {toFarsiDigits(newPayments.length + 1)}
                         </span>
                       </div>
 
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div className="space-y-1">
-                          <label className="text-slate-500 font-bold">ردیف پرداخت</label>
+                          <label className="text-slate-500 font-bold">ردیف فیش</label>
                           <input
                             type="text"
                             readOnly
@@ -1779,15 +2189,30 @@ export default function TransactionsManager({
                           />
                         </div>
 
-                        <div className="space-y-1">
-                          <label className="text-slate-500 font-bold">منبع مالی (حساب مبدا)</label>
+                        {/* Requirement 8 & 10: In slip form, when income, label is حساب دریافتی (حساب شرکت) * */}
+                        <div className="space-y-1 sm:col-span-2">
+                          <label className="text-slate-700 font-bold">
+                            {txType === "income" ? (
+                              <>حساب دریافتی (حساب شرکت) <span className="text-rose-500 font-black">* (انتخاب اجباری)</span></>
+                            ) : (
+                              "منبع مالی (حساب مبدا)"
+                            )}
+                          </label>
                           <select
                             value={payDocAccountId}
-                            onChange={e => setPayDocAccountId(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
+                            onChange={e => {
+                              setPayDocAccountId(e.target.value);
+                              if (!txAccount) setTxAccount(e.target.value);
+                            }}
+                            className={`w-full px-2.5 py-1.5 bg-slate-50 border rounded-xl outline-none ${
+                              txType === "income" && !payDocAccountId ? "border-amber-400 bg-amber-50/40" : "border-slate-200"
+                            }`}
                           >
+                            {txType === "income" && (
+                              <option value="">-- انتخاب بانک یا صندوق دریافتی شرکت (اجباری) --</option>
+                            )}
                             {accounts.map(acc => (
-                              <option key={acc.id} value={acc.id}>{acc.name} ({acc.bankName || "صندوق"})</option>
+                              <option key={acc.id} value={acc.id}>{acc.name} ({acc.bankName || acc.typeName || "صندوق"})</option>
                             ))}
                           </select>
                         </div>
@@ -1809,7 +2234,7 @@ export default function TransactionsManager({
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-slate-500 font-bold">وضعیت پرداخت</label>
+                          <label className="text-slate-500 font-bold">وضعیت فیش</label>
                           <select
                             value={payDocStatus}
                             onChange={e => setPayDocStatus(e.target.value)}
@@ -1822,22 +2247,31 @@ export default function TransactionsManager({
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-slate-500 font-bold">حساب مقصد (طرف حساب)</label>
-                          <input
-                            type="text"
-                            value={payDocDestAcc}
-                            onChange={e => setPayDocDestAcc(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono"
-                            placeholder="شماره حساب مقصد واریز"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
                           <label className="text-slate-500 font-bold">تاریخ سند پرداخت</label>
                           <ShamsiDatePicker
                             value={payDocDate}
                             onChange={setPayDocDate}
                             className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none"
+                          />
+                        </div>
+
+                        {/* Requirement 8: Counterparty account label changes to حساب مبدا (حساب طرف حسابی که واریزی انجام داده) for income */}
+                        <div className="space-y-1 col-span-full">
+                          <label className="text-slate-700 font-bold">
+                            {txType === "income"
+                              ? "حساب مبدا (حساب طرف حسابی که واریزی انجام داده)"
+                              : "حساب مقصد (طرف حساب)"}
+                          </label>
+                          <input
+                            type="text"
+                            value={payDocDestAcc}
+                            onChange={e => setPayDocDestAcc(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl outline-none font-mono"
+                            placeholder={
+                              txType === "income"
+                                ? "شماره حساب / کارت یا نام بانک طرف حسابی که واریزی انجام داده"
+                                : "شماره حساب مقصد واریز (طرف حساب)"
+                            }
                           />
                         </div>
 
@@ -1874,25 +2308,35 @@ export default function TransactionsManager({
                           type="button"
                           onClick={() => {
                             if (!payDocAmount || Number(payDocAmount) <= 0) {
-                              setFormError("لطفاً مبلغ فیش پرداختی را وارد نمایید.");
+                              setFormError("لطفاً مبلغ فیش را وارد نمایید.");
                               return;
+                            }
+                            if (txType === "income" && !payDocAccountId) {
+                              setFormError("لطفاً «حساب دریافتی (حساب شرکت)» را برای ثبت فیش دریافتی انتخاب نمایید.");
+                              return;
+                            }
+                            const resolvedSlipAcc = payDocAccountId || (txType === "expense" ? (accounts[0]?.id || "a1") : "");
+                            if (txType === "income" && !txAccount && resolvedSlipAcc) {
+                              setTxAccount(resolvedSlipAcc);
                             }
                             const newSlip = {
                               id: "p_" + Date.now(),
                               amount: Number(payDocAmount),
                               date: payDocDate,
-                              accountId: payDocAccountId || accounts[0]?.id || "a1",
+                              accountId: resolvedSlipAcc,
                               referenceNumber: payDocRefNum || "بدون شماره",
                               invoiceNumber: payDocInvoiceNum || txInvoiceNum || "",
                               invoiceDescription: payDocDesc || txDesc || "",
                               settlementMethod: payDocMethod,
                               paymentStatus: payDocStatus,
+                              sourceAccount: txType === "income" ? payDocDestAcc : undefined,
                               destinationAccount: payDocDestAcc,
                               receiptFileName: payDocReceiptName,
                               receiptFileData: payDocReceiptData,
                               description: payDocDesc || txDesc || ""
                             };
                             setNewPayments([...newPayments, newSlip]);
+                            setFormError(null);
                             
                             // Clear slip states
                             setPayDocAmount("");
@@ -1906,7 +2350,7 @@ export default function TransactionsManager({
                           }}
                           className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-[10px] transition-all cursor-pointer shadow-sm"
                         >
-                          ✓ ثبت ردیف پرداخت در لیست
+                          ✓ ثبت ردیف فیش در لیست
                         </button>
                         <button
                           type="button"
@@ -1935,7 +2379,8 @@ export default function TransactionsManager({
                           <th className="p-2.5">شرح فاکتور</th>
                           <th className="p-2.5">مبلغ (ریال)</th>
                           <th className="p-2.5">کد پیگیری</th>
-                          <th className="p-2.5">حساب مبدا</th>
+                          <th className="p-2.5">{txType === "income" ? "حساب دریافتی (حساب شرکت)" : "منبع مالی (حساب مبدا)"}</th>
+                          <th className="p-2.5">{txType === "income" ? "حساب مبدا (طرف حساب)" : "حساب مقصد"}</th>
                           <th className="p-2.5">روش تسویه</th>
                           <th className="p-2.5">وضعیت</th>
                           <th className="p-2.5 text-center">پیوست فیش</th>
@@ -1952,7 +2397,8 @@ export default function TransactionsManager({
                               <td className="p-2.5 max-w-[140px] truncate" title={p.invoiceDescription || p.description || txDesc}>{p.invoiceDescription || p.description || txDesc || "-"}</td>
                               <td className="p-2.5 font-bold text-slate-800 font-mono text-left">{toFarsiDigits(p.amount.toLocaleString())}</td>
                               <td className="p-2.5 font-mono text-center">{toFarsiDigits(p.referenceNumber || "-")}</td>
-                              <td className="p-2.5 font-sans">{payAcc?.name || "صندوق"}</td>
+                              <td className="p-2.5 font-sans font-bold text-indigo-700">{payAcc?.name || "صندوق"}</td>
+                              <td className="p-2.5 font-mono">{toFarsiDigits(p.sourceAccount || p.destinationAccount || "-")}</td>
                               <td className="p-2.5 text-center">{p.settlementMethod}</td>
                               <td className="p-2.5 text-center">
                                 <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${
@@ -2017,6 +2463,7 @@ export default function TransactionsManager({
                     setTxAmount("");
                     setTxProjId("");
                     setTxAccount("");
+                    setTxCounterpartyAccount("");
                     setTxDate(getTodayShamsiString());
                     setTxPerson("");
                     setTxDesc("");
@@ -2036,158 +2483,378 @@ export default function TransactionsManager({
       )}
 
       {/* Tab 4: Factor Approvals panel */}
-      {activeSubTab === "approvals" && (
-        <div className="space-y-6">
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-2">
-            <h3 className="text-sm font-bold text-slate-800">بررسی و تأیید هزینه‌ها و فاکتورها توسط مدیریت ارشد</h3>
-            <p className="text-[11px] text-slate-400 font-light">
-              در این بخش کلیه هزینه‌ها، خریدها و فاکتورهای صادر شده در سیستم، پیش از تسویه نهایی، توسط مدیر ارشد بررسی و تأیید مبالغ کل یا جزئی (پرداخت جزئی) می‌شوند.
-            </p>
-            {activeUser && activeUser.role !== "manager" && activeUser.username?.toLowerCase() !== "admin" && (
-              <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-[10px] font-bold">
-                ⚠️ هشدار دسترسی: شما با نقش <span className="text-rose-600">({activeUser.roleName})</span> وارد شده‌اید. امکان مشاهده وضعیت فاکتورها وجود دارد اما حق ویرایش و ثبت تأییدیه/رد فاکتورها صرفاً مخصوص مدیریت ارشد پروژه است.
-              </div>
-            )}
-          </div>
+      {activeSubTab === "approvals" && (() => {
+        const allExpenseTx = transactions.filter(t => t.type === "expense");
+        const filteredApprovalTx = allExpenseTx.filter(t => {
+          const isPending = !t.approvalStatus || t.approvalStatus === "pending";
+          const isApproved = t.approvalStatus === "approved";
+          const isRejected = t.approvalStatus === "rejected";
+          const totalPaidOnTx = t.payments ? t.payments.reduce((s, p) => s + p.amount, 0) : 0;
+          const isPaidOrHasSlips = t.paymentStatus === "paid" || totalPaidOnTx > 0;
 
-          <div className="space-y-3">
-            {transactions.filter(t => t.type === "expense").length === 0 ? (
-              <div className="p-12 bg-white rounded-3xl border border-dashed border-slate-200 text-center text-slate-400 font-light text-xs">
-                هیچ تراکنش هزینه‌ای در سیستم ثبت نشده است.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-4">
-                {transactions.filter(t => t.type === "expense").map(t => {
-                  const project = projects.find(p => p.id === t.projectId);
-                  const isPending = !t.approvalStatus || t.approvalStatus === "pending";
-                  const isApproved = t.approvalStatus === "approved";
-                  const isRejected = t.approvalStatus === "rejected";
-                  const inputVal = customApprovalAmounts[t.id] || "";
+          if (approvalTabFilter === "pending_all" && !isPending) return false;
+          if (approvalTabFilter === "pending_unpaid" && (!isPending || isPaidOrHasSlips)) return false;
+          if (approvalTabFilter === "pending_paid" && (!isPending || !isPaidOrHasSlips)) return false;
+          if (approvalTabFilter === "approved" && !isApproved) return false;
+          if (approvalTabFilter === "rejected" && !isRejected) return false;
 
-                  return (
-                    <div key={t.id} className="bg-white rounded-2xl border border-slate-150 p-5 shadow-xs hover:shadow-md transition-all space-y-4 animate-fade-in">
-                      {/* Card Header */}
-                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className={`w-2.5 h-2.5 rounded-full ${
-                            isApproved ? "bg-emerald-500 animate-pulse" : isRejected ? "bg-rose-500" : "bg-amber-500 animate-pulse"
-                          }`} />
-                          <div>
-                            <span className="text-xs font-extrabold text-slate-800 block">فاکتور هزینه‌ای: {t.category} {t.subCategory ? `(${t.subCategory})` : ""}</span>
-                            <span className="text-[10px] text-slate-400 font-light block mt-0.5">پروژه: {project?.name || "نامشخص"} | تاریخ: {toFarsiDigits(t.date)} | ثبت‌کننده: {t.createdBy || "ناظر فنی"}</span>
+          if (approvalProjectFilter !== "all" && t.projectId !== approvalProjectFilter) return false;
+
+          if (approvalSearchQuery.trim()) {
+            const q = approvalSearchQuery.toLowerCase();
+            const matchPerson = (t.personName || "").toLowerCase().includes(q);
+            const matchDesc = (t.description || "").toLowerCase().includes(q);
+            const matchCat = (t.category || "").toLowerCase().includes(q);
+            const matchInv = (t.invoiceNumber || "").toLowerCase().includes(q);
+            if (!matchPerson && !matchDesc && !matchCat && !matchInv) return false;
+          }
+          return true;
+        });
+
+        const handlePrintApprovals = (useFiltered: boolean) => {
+          const list = useFiltered ? filteredApprovalTx : allExpenseTx;
+          const sumAmt = list.reduce((s, t) => s + t.amount, 0);
+          printStructuredReport({
+            title: "گزارش بررسی و تأیید فاکتورهای هزینه‌ای توسط مدیریت",
+            subtitle: useFiltered ? "گزارش فاکتورهای فیلتر شده (بعد از فیلتر)" : "گزارش کل فاکتورهای هزینه‌ای (قبل از فیلتر)",
+            filterSummary: useFiltered
+              ? `تعداد فاکتور فیلتر شده: ${toFarsiDigits(list.length)} از ${toFarsiDigits(allExpenseTx.length)}`
+              : `کل فاکتورهای هزینه‌ای (${toFarsiDigits(allExpenseTx.length)} فاکتور)`,
+            columns: [
+              { header: "ردیف", key: "idx" },
+              { header: "شماره فاکتور", key: "inv" },
+              { header: "تاریخ", key: "date" },
+              { header: "پروژه", key: "proj" },
+              { header: "طرف حساب", key: "person" },
+              { header: "دسته‌بندی / شرح", key: "desc" },
+              { header: "مبلغ فاکتور (ریال)", key: "amount" },
+              { header: "وضعیت تسویه", key: "payStatus" },
+              { header: "وضعیت تأیید مدیریت", key: "appStatus" }
+            ],
+            rows: list.map((t, i) => {
+              const proj = projects.find(p => p.id === t.projectId);
+              const totalPaidOnTx = t.payments ? t.payments.reduce((s, p) => s + p.amount, 0) : 0;
+              const isPaidOrHasSlips = t.paymentStatus === "paid" || totalPaidOnTx > 0;
+              const appSt = t.approvalStatus === "approved"
+                ? `تأیید شده ✓ (${t.approvedBy || "مدیر"})`
+                : t.approvalStatus === "rejected"
+                ? "رد شده ❌"
+                : isPaidOrHasSlips
+                ? "تأیید نشده ⏳ (پرداخت شده - منتظر رویت و تأیید سند توسط مدیر)"
+                : "تأیید نشده ⏳ (منتظر تأیید جهت پرداخت)";
+              return {
+                idx: toFarsiDigits(i + 1),
+                inv: toFarsiDigits(t.invoiceNumber || "—"),
+                date: toFarsiDigits(t.date),
+                proj: proj?.name || "—",
+                person: t.personName,
+                desc: `${t.category}${t.subCategory ? ` (${t.subCategory})` : ""} - ${t.description}`,
+                amount: formatTomans(t.amount),
+                payStatus: isPaidOrHasSlips ? "فیش ثبت شده / پرداخت شده" : "پرداخت نشده (نسیه)",
+                appStatus: appSt
+              };
+            }),
+            summaryItems: [
+              { label: "تعداد فاکتورها", value: `${toFarsiDigits(list.length)} فقره` },
+              { label: "جمع مبالغ فاکتورها", value: formatTomans(sumAmt) }
+            ]
+          });
+        };
+
+        return (
+          <div className="space-y-6">
+            <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">بررسی و تأیید هزینه‌ها و فاکتورها توسط مدیریت ارشد</h3>
+                  <p className="text-[11px] text-slate-400 font-light mt-0.5">
+                    کلیه فاکتورهای هزینه‌ای (چه نسیه جهت دستور پرداخت و چه فاکتورهایی که همزمان پرداخت شده و فیش دارند) در وضعیت «تأیید نشده» قرار می‌گیرند تا مدیر سند و فاکتور را رویت و تأیید نماید.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 items-center text-xs">
+                  <button
+                    type="button"
+                    onClick={() => handlePrintApprovals(true)}
+                    className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl font-bold flex items-center gap-1 border border-emerald-200 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    چاپ بعد از فیلتر ({toFarsiDigits(filteredApprovalTx.length)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePrintApprovals(false)}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold flex items-center gap-1 border border-slate-200 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    چاپ کل (قبل از فیلتر)
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter & Search Bar for Approvals */}
+              <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3 pt-2 border-t border-slate-100 text-xs">
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setApprovalTabFilter("pending_all")}
+                    className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                      approvalTabFilter === "pending_all" ? "bg-amber-500 border-amber-500 text-white" : "bg-slate-50 border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    ⏳ همه تأیید نشده‌ها ({toFarsiDigits(allExpenseTx.filter(t => !t.approvalStatus || t.approvalStatus === "pending").length)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApprovalTabFilter("pending_unpaid")}
+                    className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                      approvalTabFilter === "pending_unpaid" ? "bg-rose-600 border-rose-600 text-white" : "bg-slate-50 border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    تأیید نشده جهت پرداخت
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApprovalTabFilter("pending_paid")}
+                    className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                      approvalTabFilter === "pending_paid" ? "bg-indigo-600 border-indigo-600 text-white" : "bg-slate-50 border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    پرداخت شده منتظر رویت و تأیید مدیر
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApprovalTabFilter("approved")}
+                    className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                      approvalTabFilter === "approved" ? "bg-emerald-600 border-emerald-600 text-white" : "bg-slate-50 border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    ✓ تأیید شده‌ها ({toFarsiDigits(allExpenseTx.filter(t => t.approvalStatus === "approved").length)})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApprovalTabFilter("all")}
+                    className={`px-3 py-1.5 rounded-xl font-bold border transition-all cursor-pointer ${
+                      approvalTabFilter === "all" ? "bg-slate-800 border-slate-800 text-white" : "bg-slate-50 border-slate-200 text-slate-600"
+                    }`}
+                  >
+                    همه فاکتورهای هزینه ({toFarsiDigits(allExpenseTx.length)})
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  <select
+                    value={approvalProjectFilter}
+                    onChange={e => setApprovalProjectFilter(e.target.value)}
+                    className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none"
+                  >
+                    <option value="all">همه پروژه‌ها</option>
+                    {projects.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <div className="relative flex items-center">
+                    <input
+                      type="text"
+                      placeholder="جستجوی طرف حساب، شرح، شماره فاکتور..."
+                      value={approvalSearchQuery}
+                      onChange={e => setApprovalSearchQuery(e.target.value)}
+                      className="px-3 py-1.5 pr-8 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:border-indigo-500"
+                    />
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute right-2.5" />
+                  </div>
+                </div>
+              </div>
+
+              {activeUser && activeUser.role !== "manager" && activeUser.username?.toLowerCase() !== "admin" && (
+                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-[10px] font-bold">
+                  ⚠️ هشدار دسترسی: شما با نقش <span className="text-rose-600">({activeUser.roleName})</span> وارد شده‌اید. امکان مشاهده وضعیت فاکتورها وجود دارد اما حق ویرایش و ثبت تأییدیه/رد فاکتورها صرفاً مخصوص مدیریت ارشد پروژه است.
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              {filteredApprovalTx.length === 0 ? (
+                <div className="p-12 bg-white rounded-3xl border border-dashed border-slate-200 text-center text-slate-400 font-light text-xs">
+                  هیچ فاکتور هزینه‌ای متناسب با فیلتر انتخابی یافت نشد.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4">
+                  {filteredApprovalTx.map(t => {
+                    const project = projects.find(p => p.id === t.projectId);
+                    const isPending = !t.approvalStatus || t.approvalStatus === "pending";
+                    const isApproved = t.approvalStatus === "approved";
+                    const isRejected = t.approvalStatus === "rejected";
+                    const inputVal = customApprovalAmounts[t.id] || "";
+                    const totalPaidOnTx = t.payments ? t.payments.reduce((s, p) => s + p.amount, 0) : 0;
+                    const isPaidOrHasSlips = t.paymentStatus === "paid" || totalPaidOnTx > 0;
+
+                    return (
+                      <div key={t.id} className="bg-white rounded-2xl border border-slate-150 p-5 shadow-xs hover:shadow-md transition-all space-y-4 animate-fade-in">
+                        {/* Card Header */}
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className={`w-2.5 h-2.5 rounded-full ${
+                              isApproved ? "bg-emerald-500 animate-pulse" : isRejected ? "bg-rose-500" : "bg-amber-500 animate-pulse"
+                            }`} />
+                            <div>
+                              <span className="text-xs font-extrabold text-slate-800 block">
+                                فاکتور هزینه‌ای: {t.category} {t.subCategory ? `(${t.subCategory})` : ""} {t.invoiceNumber ? `| شماره فاکتور: ${toFarsiDigits(t.invoiceNumber)}` : ""}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-light block mt-0.5">پروژه: {project?.name || "نامشخص"} | تاریخ: {toFarsiDigits(t.date)} | ثبت‌کننده: {t.createdBy || "ناظر فنی"}</span>
+                            </div>
                           </div>
-                        </div>
 
-                        <div>
-                          {isApproved && (
-                            <div className="bg-emerald-50 border border-emerald-150 text-emerald-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
-                              <span>✓ تأیید شده برای پرداخت</span>
-                              {t.approvedAmount !== undefined && t.approvedAmount !== t.amount && (
-                                <span className="bg-emerald-600 text-white px-1.5 py-0.5 rounded text-[8px]">پرداخت جزئی</span>
-                              )}
-                            </div>
-                          )}
-                          {isRejected && (
-                            <div className="bg-rose-50 border border-rose-150 text-rose-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
-                              <span>❌ رد شده توسط مدیریت</span>
-                            </div>
-                          )}
-                          {isPending && (
-                            <div className="bg-amber-50 border border-amber-150 text-amber-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
-                              <span>⏳ منتظر بررسی و تأیید</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Card details */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
-                          <span className="text-[10px] text-slate-400 block font-bold">مبلغ اصلی فاکتور:</span>
-                          <span className="text-sm font-extrabold text-slate-800 font-mono block mt-1">{formatTomans(t.amount)}</span>
-                        </div>
-                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
-                          <span className="text-[10px] text-slate-400 block font-bold">طرف حساب (ذی‌نفع):</span>
-                          <span className="text-xs font-extrabold text-slate-800 block mt-1.5">{t.personName || "فاقد طرف حساب"}</span>
-                        </div>
-                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
-                          <span className="text-[10px] text-slate-400 block font-bold">مبلغ مصوب تأیید شده:</span>
-                          <span className="text-sm font-extrabold text-indigo-700 font-mono block mt-1">
-                            {isApproved ? formatTomans(t.approvedAmount ?? t.amount) : "هنوز تأیید نشده"}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Description */}
-                      {t.description && (
-                        <p className="text-[10px] text-slate-500 bg-slate-50/50 p-2.5 rounded-xl border border-slate-150 leading-relaxed font-light">
-                          <span className="font-bold">توضیحات فاکتور:</span> {t.description}
-                        </p>
-                      )}
-
-                      {/* Audit Details */}
-                      {t.approvedBy && (
-                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-150 text-[10px] text-slate-500 font-medium grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          <div>✍️ بررسی‌کننده: <span className="font-bold text-slate-700">{t.approvedBy}</span></div>
-                          <div className="sm:text-left">📆 تاریخ ثبت نظر: <span className="font-mono text-slate-700">{toFarsiDigits(t.approvedDate || "")}</span></div>
-                        </div>
-                      )}
-
-                      {/* Actions for Manager */}
-                      {isPending && (activeUser?.role === "manager" || activeUser?.username?.toLowerCase() === "admin") && (
-                        <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                          {/* Left: Partial payment inputs */}
-                          <div className="space-y-1.5 w-full sm:max-w-xs text-right" dir="rtl">
-                            <label className="text-[10px] text-slate-500 font-bold block">مبلغ مصوب برای واریز (ریال):</label>
-                            <div className="flex gap-2">
-                              <FormattedAmountInput
-                                placeholder={`مبلغ دلخواه (پیش‌فرض: ${t.amount})`}
-                                value={inputVal}
-                                onChange={val => setCustomApprovalAmounts({ ...customApprovalAmounts, [t.id]: val })}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 font-mono"
-                              />
-                            </div>
-                            {inputVal && Number(inputVal) > 0 && (
-                              <div className="text-[9px] font-bold text-indigo-600 mt-1">
-                                ✍️ تأیید مبلّغ {numberToPersianWords(Number(inputVal))} ریال
+                          <div className="flex flex-wrap gap-1.5 items-center">
+                            {isPaidOrHasSlips ? (
+                              <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold px-2.5 py-1 rounded-xl">
+                                💳 فیش پرداخت ثبت شده ({formatTomans(totalPaidOnTx || t.amount)})
+                              </span>
+                            ) : (
+                              <span className="bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-bold px-2.5 py-1 rounded-xl">
+                                🕒 پرداخت نشده (در انتظار دستور پرداخت)
+                              </span>
+                            )}
+                            {isApproved && (
+                              <div className="bg-emerald-50 border border-emerald-150 text-emerald-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
+                                <span>✓ رویت و تأیید شده توسط مدیریت</span>
+                                {t.approvedAmount !== undefined && t.approvedAmount !== t.amount && (
+                                  <span className="bg-emerald-600 text-white px-1.5 py-0.5 rounded text-[8px]">تأیید جزئی</span>
+                                )}
+                              </div>
+                            )}
+                            {isRejected && (
+                              <div className="bg-rose-50 border border-rose-150 text-rose-700 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
+                                <span>❌ رد شده توسط مدیریت</span>
+                              </div>
+                            )}
+                            {isPending && (
+                              <div className="bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-extrabold px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-3xs">
+                                <span>
+                                  {isPaidOrHasSlips
+                                    ? "⏳ تأیید نشده (منتظر رویت سند و فاکتور توسط مدیر)"
+                                    : "⏳ تأیید نشده (منتظر تأیید مدیریت جهت پرداخت)"}
+                                </span>
                               </div>
                             )}
                           </div>
+                        </div>
 
-                          {/* Right: Approve/Reject CTA buttons */}
-                          <div className="flex items-center gap-2 self-end sm:self-auto">
-                            <button
-                              onClick={() => {
-                                if (onApproveTransaction) {
-                                  onApproveTransaction(t.id, "rejected");
-                                }
-                              }}
-                              className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-150 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-3xs"
-                            >
-                              ❌ رد کامل فاکتور
-                            </button>
-                            <button
-                              onClick={() => {
-                                if (onApproveTransaction) {
-                                  const approvedAmt = inputVal ? Number(inputVal) : undefined;
-                                  onApproveTransaction(t.id, "approved", approvedAmt);
-                                }
-                              }}
-                              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm"
-                            >
-                              ✓ تأیید مصوب فاکتور
-                            </button>
+                        {/* Card details */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
+                            <span className="text-[10px] text-slate-400 block font-bold">مبلغ اصلی فاکتور:</span>
+                            <span className="text-sm font-extrabold text-slate-800 font-mono block mt-1">{formatTomans(t.amount)}</span>
+                          </div>
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
+                            <span className="text-[10px] text-slate-400 block font-bold">طرف حساب (ذی‌نفع):</span>
+                            <span className="text-xs font-extrabold text-slate-800 block mt-1.5">{t.personName || "فاقد طرف حساب"}</span>
+                          </div>
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-150">
+                            <span className="text-[10px] text-slate-400 block font-bold">مبلغ مصوب تأیید شده:</span>
+                            <span className="text-sm font-extrabold text-indigo-700 font-mono block mt-1">
+                              {isApproved ? formatTomans(t.approvedAmount ?? t.amount) : "هنوز توسط مدیر تأیید نشده"}
+                            </span>
                           </div>
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+
+                        {/* Description & Attached Documents for Manager Inspection */}
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 bg-slate-50/50 p-2.5 rounded-xl border border-slate-150 text-[10px]">
+                          <p className="text-slate-600 leading-relaxed font-light">
+                            <span className="font-bold text-slate-800">توضیحات فاکتور:</span> {t.description || "بدون توضیحات"}
+                          </p>
+                          <div className="flex flex-wrap gap-2 items-center">
+                            {t.attachmentName && (
+                              <button
+                                type="button"
+                                onClick={() => setViewingAttachment(t)}
+                                className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-bold border border-indigo-200 cursor-pointer flex items-center gap-1"
+                              >
+                                <FileText className="w-3.5 h-3.5" />
+                                مشاهده تصویر فاکتور ({t.attachmentName})
+                              </button>
+                            )}
+                            {t.payments && t.payments.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayAccount(t.accountId || accounts[0]?.id || "");
+                                  setPayCounterpartyAccount(t.destinationAccount || "");
+                                  setPayModalError(null);
+                                  setSelectedTxForPayments(t);
+                                }}
+                                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg font-bold border border-emerald-200 cursor-pointer flex items-center gap-1"
+                              >
+                                <CreditCard className="w-3.5 h-3.5" />
+                                رویت فیش‌های پرداخت ثبت شده ({toFarsiDigits(t.payments.length)} فیش)
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Audit Details */}
+                        {t.approvedBy && (
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-150 text-[10px] text-slate-500 font-medium grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>✍️ بررسی‌کننده: <span className="font-bold text-slate-700">{t.approvedBy}</span></div>
+                            <div className="sm:text-left">📆 تاریخ ثبت نظر: <span className="font-mono text-slate-700">{toFarsiDigits(t.approvedDate || "")}</span></div>
+                          </div>
+                        )}
+
+                        {/* Actions for Manager */}
+                        {isPending && (!activeUser || activeUser?.role === "manager" || activeUser?.username?.toLowerCase() === "admin") && (
+                          <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                            {/* Left: Partial payment inputs */}
+                            <div className="space-y-1.5 w-full sm:max-w-xs text-right" dir="rtl">
+                              <label className="text-[10px] text-slate-500 font-bold block">مبلغ مصوب مورد تأیید مدیریت (ریال):</label>
+                              <div className="flex gap-2">
+                                <FormattedAmountInput
+                                  placeholder={`مبلغ دلخواه (پیش‌فرض کل فاکتور: ${t.amount})`}
+                                  value={inputVal}
+                                  onChange={val => setCustomApprovalAmounts({ ...customApprovalAmounts, [t.id]: val })}
+                                  className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 font-mono"
+                                />
+                              </div>
+                              {inputVal && Number(inputVal) > 0 && (
+                                <div className="text-[9px] font-bold text-indigo-600 mt-1">
+                                  ✍️ تأیید مبلغ {numberToPersianWords(Number(inputVal))} ریال
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Right: Approve/Reject CTA buttons */}
+                            <div className="flex items-center gap-2 self-end sm:self-auto">
+                              <button
+                                onClick={() => {
+                                  if (onApproveTransaction) {
+                                    onApproveTransaction(t.id, "rejected");
+                                  }
+                                }}
+                                className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-150 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-3xs"
+                              >
+                                ❌ رد کامل فاکتور
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (onApproveTransaction) {
+                                    const approvedAmt = inputVal ? Number(inputVal) : undefined;
+                                    onApproveTransaction(t.id, "approved", approvedAmt);
+                                  }
+                                }}
+                                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-sm"
+                              >
+                                {isPaidOrHasSlips ? "✓ رویت شد و تأیید نهایی سند و فاکتور" : "✓ تأیید مدیریت جهت پرداخت فاکتور"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Visual Factor Attachment Viewer Modal (Electronic Archive) */}
       {viewingAttachment && (
@@ -2433,7 +3100,7 @@ export default function TransactionsManager({
 
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
                 <p className="text-[10px] font-bold text-indigo-600 mb-1">فازهای کاری پیش‌فرض پروژه:</p>
-                <p className="text-[9px] text-slate-500 leading-relaxed">اسکلت بتنی، سفت‌کاری، نازک‌کاری و تأسیسات به صورت خودکار به فازهای کاری پروژه اختصاص داده خواهند شد و می‌توانید بعداً فازهای سفارشی تعریف کنید.</p>
+                <p className="text-[9px] text-slate-500 leading-relaxed">ساختار درختی ۱۰ شاخه‌ای مراحل ساخت به صورت خودکار به پروژه اختصاص داده می‌شود و قابل ویرایش است.</p>
               </div>
 
               <div className="pt-2 flex justify-end gap-2">
@@ -2559,18 +3226,18 @@ export default function TransactionsManager({
         </div>
       )}
 
-      {/* Quick Stage Creation Modal */}
+      {/* Quick Stage Creation Modal (Requirement 7: Hierarchical Branch & Sub-Stage support) */}
       {showStageModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
           <motion.div 
             initial={{ scale: 0.95, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-100 space-y-4 text-right"
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 text-right"
           >
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <h4 className="font-bold text-slate-800 text-sm flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-indigo-500" />
-                تعریف فاز/مرحله ساخت سفارشی
+                تعریف شاخه یا زیرشاخه مرحله ساخت جدید
               </h4>
               <button 
                 type="button"
@@ -2583,16 +3250,29 @@ export default function TransactionsManager({
 
             <form onSubmit={handleQuickStageSubmit} className="space-y-4 text-xs">
               <div>
-                <label className="text-[10px] text-slate-500 font-bold block mb-1">نام فاز یا مرحله کاری جدید</label>
+                <label className="text-[10px] text-slate-500 font-bold block mb-1">انتخاب شاخه اصلی (فصل اجرایی)</label>
+                <select
+                  value={stageModalBranchId}
+                  onChange={e => setStageModalBranchId(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="new_branch">➕ ایجاد به عنوان یک شاخه اصلی جدید</option>
+                  {activeProjectStageTree.map(b => (
+                    <option key={b.id} value={b.id}>زیرمجموعهِ {b.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 font-bold block mb-1">نام مرحله یا زیرشاخه اجرایی جدید</label>
                 <input
                   type="text"
                   required
-                  placeholder="مثال: محوطه‌سازی و دیوارکشی"
+                  placeholder="مثال: اجرای وال‌پست و میلگرد بستر"
                   value={stageModalName}
                   onChange={e => setStageModalName(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
                 />
-                <p className="text-[9px] text-slate-400 mt-1">این مرحله کاری به صورت اختصاصی به مراحل ساخت پروژه فعال متصل و ذخیره می‌گردد.</p>
+                <p className="text-[9px] text-slate-400 mt-1">این مرحله کاری در ساختار درختی مراحل پروژه ذخیره می‌گردد.</p>
               </div>
 
               <div className="pt-2 flex justify-end gap-2">
@@ -2607,7 +3287,7 @@ export default function TransactionsManager({
                   type="submit"
                   className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs transition-colors cursor-pointer"
                 >
-                  افزودن به پروژه
+                  افزودن به درخت مراحل پروژه
                 </button>
               </div>
             </form>
@@ -2619,6 +3299,7 @@ export default function TransactionsManager({
       {selectedTxForPayments && (() => {
         const totalPaid = selectedTxForPayments.payments ? selectedTxForPayments.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
         const remainingToPay = selectedTxForPayments.amount - totalPaid;
+        const isModalIncome = selectedTxForPayments.type === "income";
 
         return (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 text-right font-sans" dir="rtl">
@@ -2631,9 +3312,9 @@ export default function TransactionsManager({
                 <div>
                   <h4 className="font-bold text-slate-850 text-sm flex items-center gap-2">
                     <CreditCard className="w-5 h-5 text-indigo-600" />
-                    مدیریت اسناد پرداخت و اقساط فاکتور
+                    {isModalIncome ? "مدیریت فیش‌های دریافتی و واریزی به حساب شرکت" : "مدیریت اسناد پرداخت و اقساط فاکتور"}
                   </h4>
-                  <p className="text-[10px] text-slate-400 mt-0.5">ثبت چند مرحله‌ای پرداخت‌ها و اسناد بانکی مربوط به فاکتور {selectedTxForPayments.personName}</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">ثبت چند مرحله‌ای فیش‌ها و اسناد بانکی مربوط به طرف حساب {selectedTxForPayments.personName}</p>
                 </div>
                 <button 
                   type="button"
@@ -2648,15 +3329,15 @@ export default function TransactionsManager({
                 {/* Financial Summary Cards */}
                 <div className="grid grid-cols-3 gap-3">
                   <div className="p-3 bg-slate-50 border border-slate-150 rounded-2xl">
-                    <span className="text-[10px] text-slate-400 block font-medium">مبلغ کل فاکتور:</span>
+                    <span className="text-[10px] text-slate-400 block font-medium">مبلغ کل سند:</span>
                     <span className="text-sm font-extrabold text-slate-800 font-mono block mt-0.5">{formatTomans(selectedTxForPayments.amount)}</span>
                   </div>
                   <div className="p-3 bg-emerald-50/70 border border-emerald-100 rounded-2xl">
-                    <span className="text-[10px] text-emerald-600 block font-bold">کل پرداخت شده:</span>
+                    <span className="text-[10px] text-emerald-600 block font-bold">{isModalIncome ? "کل دریافت شده:" : "کل پرداخت شده:"}</span>
                     <span className="text-sm font-extrabold text-emerald-850 font-mono block mt-0.5">{formatTomans(totalPaid)}</span>
                   </div>
                   <div className={`p-3 rounded-2xl border ${remainingToPay <= 0 ? 'bg-emerald-50 border-emerald-150 text-emerald-800' : 'bg-rose-50 border-rose-150 text-rose-800'}`}>
-                    <span className="text-[10px] block font-bold">مانده بدهی فاکتور:</span>
+                    <span className="text-[10px] block font-bold">مانده تسویه نشده:</span>
                     <span className="text-sm font-extrabold font-mono block mt-0.5">
                       {remainingToPay <= 0 ? "تسویه کامل" : formatTomans(remainingToPay)}
                     </span>
@@ -2667,11 +3348,11 @@ export default function TransactionsManager({
                 <div className="space-y-2">
                   <h5 className="font-bold text-slate-700 text-[11px] flex items-center gap-1">
                     <Receipt className="w-3.5 h-3.5 text-slate-400" />
-                    اسناد پرداخت ثبت‌شده برای این فاکتور
+                    اسناد و فیش‌های ثبت‌شده برای این سند
                   </h5>
                   {(!selectedTxForPayments.payments || selectedTxForPayments.payments.length === 0) ? (
                     <div className="p-6 bg-slate-50 border border-dashed border-slate-200 rounded-2xl text-center text-slate-400 italic">
-                      هیچ سند پرداختی ثبت نشده است. (وضعیت فاکتور: پرداخت‌نشده / بدهی معین شخص)
+                      هیچ فیش مجزایی ثبت نشده است.
                     </div>
                   ) : (
                     <div className="border border-slate-100 rounded-xl overflow-hidden">
@@ -2680,10 +3361,11 @@ export default function TransactionsManager({
                           <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 font-bold">
                             <th className="p-2.5 text-center">ردیف</th>
                             <th className="p-2.5 text-center">شماره فاکتور</th>
-                            <th className="p-2.5">شرح فاکتور</th>
+                            <th className="p-2.5">شرح</th>
                             <th className="p-2.5">تاریخ</th>
-                            <th className="p-2.5">حساب پرداخت‌کننده</th>
-                            <th className="p-2.5">شماره سند / پیگیری</th>
+                            <th className="p-2.5">{isModalIncome ? "حساب دریافتی (شرکت)" : "منبع مالی (شرکت)"}</th>
+                            <th className="p-2.5">{isModalIncome ? "حساب مبدا (طرف حساب)" : "حساب مقصد (طرف حساب)"}</th>
+                            <th className="p-2.5">شماره پیگیری</th>
                             <th className="p-2.5 text-left">مبلغ (ریال)</th>
                           </tr>
                         </thead>
@@ -2697,6 +3379,7 @@ export default function TransactionsManager({
                                 <td className="p-2.5 text-slate-700">{p.invoiceDescription || p.description || selectedTxForPayments.description || "-"}</td>
                                 <td className="p-2.5 font-mono text-slate-500">{toFarsiDigits(p.date)}</td>
                                 <td className="p-2.5 font-semibold text-slate-800">{pAcc?.name || "صندوق نقدی"}</td>
+                                <td className="p-2.5 font-mono text-indigo-700">{toFarsiDigits(p.sourceAccount || p.destinationAccount || "—")}</td>
                                 <td className="p-2.5 font-mono text-slate-600">{toFarsiDigits(p.referenceNumber || "بدون شماره")}</td>
                                 <td className="p-2.5 font-bold text-left text-indigo-700 font-mono">{formatTomans(p.amount)}</td>
                               </tr>
@@ -2712,11 +3395,11 @@ export default function TransactionsManager({
                 <form onSubmit={handlePaymentSubmit} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
                   <h5 className="font-bold text-slate-800 text-[11px] flex items-center gap-1 border-b border-slate-200 pb-1.5">
                     <Plus className="w-4 h-4 text-emerald-600" />
-                    ثبت ردیف پرداخت جدید برای فاکتور
+                    {isModalIncome ? "ثبت فیش دریافتی جدید (واریز به حساب شرکت)" : "ثبت ردیف پرداخت جدید برای فاکتور"}
                   </h5>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">ردیف پرداخت</label>
+                      <label className="text-[10px] text-slate-500 font-bold block">ردیف فیش</label>
                       <input
                         type="text"
                         readOnly
@@ -2735,10 +3418,10 @@ export default function TransactionsManager({
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">شرح فاکتور / توضیحات پرداخت</label>
+                      <label className="text-[10px] text-slate-500 font-bold block">شرح فیش</label>
                       <input
                         type="text"
-                        placeholder={selectedTxForPayments.description || "مثال: پرداخت قسط اول سیمان خریداری شده"}
+                        placeholder={selectedTxForPayments.description || "شرح پرداخت / دریافت"}
                         value={payDesc}
                         onChange={e => setPayDesc(e.target.value)}
                         className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
@@ -2748,7 +3431,7 @@ export default function TransactionsManager({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">مبلغ پرداختی (ریال) <span className="text-rose-500">*</span></label>
+                      <label className="text-[10px] text-slate-500 font-bold block">مبلغ فیش (ریال) <span className="text-rose-500">*</span></label>
                       <FormattedAmountInput
                         required
                         placeholder={`مثال: ${remainingToPay > 0 ? remainingToPay : selectedTxForPayments.amount}`}
@@ -2764,7 +3447,7 @@ export default function TransactionsManager({
                       )}
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">تاریخ پرداخت (شمسی) <span className="text-rose-500">*</span></label>
+                      <label className="text-[10px] text-slate-500 font-bold block">تاریخ فیش (شمسی) <span className="text-rose-500">*</span></label>
                       <ShamsiDatePicker
                         required
                         placeholder="مثال: ۱۴۰۳/۰۴/۰۳"
@@ -2775,30 +3458,62 @@ export default function TransactionsManager({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">بانک / منبع مالی پرداخت‌کننده</label>
+                      <label className="text-[10px] text-slate-700 font-bold block">
+                        {isModalIncome ? (
+                          <>حساب دریافتی (حساب شرکت) <span className="text-rose-500 font-black">* (اجباری)</span></>
+                        ) : (
+                          "منبع مالی (حساب مبدا شرکت)"
+                        )}
+                      </label>
                       <select
                         value={payAccount}
                         onChange={e => setPayAccount(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                        className={`w-full bg-white border rounded-xl px-2 py-2 text-xs focus:outline-none focus:border-indigo-500 ${
+                          isModalIncome && !payAccount ? "border-amber-400 bg-amber-50/40" : "border-slate-200"
+                        }`}
                       >
+                        {isModalIncome && (
+                          <option value="">-- انتخاب حساب دریافتی شرکت (اجباری) --</option>
+                        )}
                         {accounts.map(a => (
                           <option key={a.id} value={a.id}>{a.name} (موجودی: {formatTomans(a.balance)})</option>
                         ))}
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-500 font-bold block">شماره پیگیری فیش / چک / حواله</label>
+                      <label className="text-[10px] text-slate-700 font-bold block">
+                        {isModalIncome
+                          ? "حساب مبدا (حساب طرف حسابی که واریزی انجام داده)"
+                          : "حساب مقصد (طرف حساب)"}
+                      </label>
                       <input
                         type="text"
-                        placeholder="مثال: ۹۸۷۶۵۴۳۲"
-                        value={payRef}
-                        onChange={e => setPayRef(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-left focus:outline-none focus:border-indigo-500"
+                        placeholder={isModalIncome ? "شماره کارت/حساب طرف حساب واریزکننده..." : "شماره کارت/حساب مقصد..."}
+                        value={payCounterpartyAccount}
+                        onChange={e => setPayCounterpartyAccount(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:border-indigo-500"
                       />
                     </div>
                   </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-500 font-bold block">شماره پیگیری فیش / چک / حواله</label>
+                    <input
+                      type="text"
+                      placeholder="مثال: ۹۸۷۶۵۴۳۲"
+                      value={payRef}
+                      onChange={e => setPayRef(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-left focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  {payModalError && (
+                    <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-[11px] font-bold">
+                      ⚠️ {payModalError}
+                    </div>
+                  )}
 
                   <div className="pt-2 flex justify-end">
                     <button
@@ -2806,7 +3521,7 @@ export default function TransactionsManager({
                       className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
                     >
                       <Receipt className="w-4 h-4" />
-                      ذخیره و ثبت رسمی سند پرداخت
+                      ذخیره و ثبت رسمی فیش
                     </button>
                   </div>
                 </form>

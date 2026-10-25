@@ -1624,11 +1624,7 @@ export default {
           VALUES (?, ?, ?, ?, ?, 0, NULL)
         `).bind(instId, preSaleId, installmentName, dueDate, Number(amount || 0)).run();
 
-        const presale = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(preSaleId).first();
-        if (presale && presale.contact_id) {
-          await env.DB.prepare("UPDATE contacts SET balance = COALESCE(balance, 0) + ? WHERE id = ?")
-            .bind(Number(amount || 0), presale.contact_id).run();
-        }
+        // Buyer balance already includes the full contract totalPrice; do not double-add installment amount
         return new Response(JSON.stringify({ status: "success", id: instId }), { headers: corsHeaders });
       }
 
@@ -1640,15 +1636,9 @@ export default {
         if (!inst) {
           return new Response(JSON.stringify({ error: "قسط یافت نشد" }), { status: 404, headers: corsHeaders });
         }
-        const diff = Number(amount || inst.amount) - Number(inst.amount || 0);
         await env.DB.prepare("UPDATE pre_sale_installments SET installment_name = ?, due_date = ?, amount = ? WHERE id = ?")
           .bind(installmentName || inst.installment_name, dueDate || inst.due_date, Number(amount || inst.amount), installmentId).run();
 
-        const presale = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(inst.pre_sale_id).first();
-        if (presale && presale.contact_id) {
-          await env.DB.prepare("UPDATE contacts SET balance = MAX(0, COALESCE(balance, 0) + ?) WHERE id = ?")
-            .bind(diff, presale.contact_id).run();
-        }
         return new Response(JSON.stringify({ status: "success" }), { headers: corsHeaders });
       }
 
@@ -1668,17 +1658,6 @@ export default {
         const inst = installments[0];
         if (inst.is_paid === 1) {
           return new Response(JSON.stringify({ error: "قسط پرداخت شده را نمی‌توان حذف کرد" }), { status: 400, headers: corsHeaders });
-        }
-
-        const { results: preSales } = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(inst.pre_sale_id).all();
-        if (preSales && preSales.length > 0) {
-          const presale = preSales[0];
-          const { results: buyers } = await env.DB.prepare("SELECT * FROM contacts WHERE id = ?").bind(presale.contact_id).all();
-          if (buyers && buyers.length > 0) {
-            const buyer = buyers[0];
-            const newBal = Math.max(0, (buyer.balance || 0) - inst.amount);
-            await env.DB.prepare("UPDATE contacts SET balance = ? WHERE id = ?").bind(newBal, buyer.id).run();
-          }
         }
 
         await env.DB.prepare("DELETE FROM pre_sale_installments WHERE id = ?").bind(installmentId).run();
@@ -1869,37 +1848,23 @@ export default {
           JSON.stringify({ ...p, numberOfUnits: requestedUnitsCount })
         ).run();
 
-        // Auto-generate units based on automatic block structuring or requestedUnitsCount
+        // Synchronize units dynamically on create and edit (both adding and soft-deleting excess available units)
         const defArea = Number(p.defaultUnitArea || 0);
         const defPrice = Number(p.defaultUnitPrice || p.defaultPricePerMeter || 0);
-        const { results: currentUnits } = await env.DB.prepare("SELECT id, block_name FROM units WHERE project_id = ? AND (is_deleted IS NULL OR is_deleted = 0)").bind(pId).all();
+        const { results: currentUnits } = await env.DB.prepare("SELECT * FROM units WHERE project_id = ? AND (is_deleted IS NULL OR is_deleted = 0)").bind(pId).all();
         const activeList = currentUnits || [];
         const unitStmts = [];
+        const style = p.numberingStyle || "block_floor_unit_short";
 
-        if (isNew && Array.isArray(p.generatedUnits) && p.generatedUnits.length > 0) {
-          p.generatedUnits.forEach((gu, idx) => {
-            const uId = "u_" + Date.now() + "_" + (idx + 1) + "_" + Math.floor(Math.random() * 1000);
-            unitStmts.push(
-              env.DB.prepare(`
-                INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
-                VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
-              `).bind(
-                uId,
-                pId,
-                String(gu.unitNumber || (idx + 1)),
-                String(gu.blockName || ""),
-                String(gu.floor ?? "1"),
-                defArea,
-                defArea,
-                defPrice,
-                defArea * defPrice
-              )
-            );
-          });
-        } else if (Array.isArray(p.blocks) && p.blocks.length > 0 && (isNew || p.syncBlockUnits)) {
-          const style = p.numberingStyle || "block_floor_unit_short";
-          let globalSeq = activeList.length;
-
+        let desiredUnits = [];
+        if (Array.isArray(p.generatedUnits) && p.generatedUnits.length > 0) {
+          desiredUnits = p.generatedUnits.map((gu, idx) => ({
+            unitNumber: String(gu.unitNumber || (idx + 1)),
+            blockName: String(gu.blockName || ""),
+            floor: String(gu.floor ?? "1")
+          }));
+        } else if (Array.isArray(p.blocks) && p.blocks.length > 0) {
+          let globalSeq = 0;
           p.blocks.forEach((blk) => {
             const bName = String(blk.name || "").trim();
             const floors = Math.max(0, Number(blk.floors ?? 4));
@@ -1921,15 +1886,10 @@ export default {
               }
             }
 
-            const existingInBlock = activeList.filter(u => (u.block_name || "") === bName);
             let seqInBlock = 0;
-
             floorConfigs.forEach((fc) => {
               for (let posInFloor = 1; posInFloor <= fc.unitsCount; posInFloor++) {
                 seqInBlock++;
-                if (!isNew && seqInBlock <= existingInBlock.length) {
-                  continue;
-                }
                 globalSeq++;
                 const floorNum = fc.floorNumber;
                 let unitNumber = `${bName}${floorNum}${posInFloor}`;
@@ -1946,39 +1906,104 @@ export default {
                 } else if (style === "sequential") {
                   unitNumber = bName && p.blocks.length > 1 ? `${bName}-${seqInBlock}` : String(globalSeq);
                 }
-                const uId = "u_" + Date.now() + "_" + globalSeq + "_" + Math.floor(Math.random() * 1000);
-                unitStmts.push(
-                  env.DB.prepare(`
-                    INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
-                    VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
-                  `).bind(uId, pId, unitNumber, bName, String(floorNum), defArea, defArea, defPrice, defArea * defPrice)
-                );
+                desiredUnits.push({ unitNumber, blockName: bName, floor: String(floorNum) });
               }
             });
           });
         } else if (requestedUnitsCount > 0) {
           const numBlocks = Math.max(1, Number(p.numberOfBlocks) || 1);
           const blockLabels = ["A", "B", "C", "D", "E", "F", "G", "H"];
-          const startIdx = isNew ? 1 : (activeList.length + 1);
           const unitsPerBlock = Math.ceil(requestedUnitsCount / numBlocks);
-
-          for (let i = startIdx; i <= requestedUnitsCount; i++) {
+          for (let i = 1; i <= requestedUnitsCount; i++) {
             const blockIdx = numBlocks > 1 ? Math.min(numBlocks - 1, Math.floor((i - 1) / unitsPerBlock)) : 0;
             const bName = numBlocks > 1 ? (blockLabels[blockIdx] || `بلوک ${blockIdx + 1}`) : "";
             const idxInBlock = numBlocks > 1 ? ((i - 1) % unitsPerBlock) + 1 : i;
             const floor = String(Math.ceil(idxInBlock / 2));
             const posInFloor = ((idxInBlock - 1) % 2) + 1;
-            const unitNumber = p.numberingStyle === "floor_unit"
+            const unitNumber = style === "floor_unit"
               ? String(Number(floor) * 100 + posInFloor)
               : String(i);
-            const uId = "u_" + Date.now() + "_" + i + "_" + Math.floor(Math.random() * 100);
-            unitStmts.push(
-              env.DB.prepare(`
-                INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
-                VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
-              `).bind(uId, pId, unitNumber, bName, floor, defArea, defArea, defPrice, defArea * defPrice)
-            );
+            desiredUnits.push({ unitNumber, blockName: bName, floor });
           }
+        }
+
+        if (desiredUnits.length > 0) {
+          const usedUnitIds = new Set();
+          const desiredByBlock = new Map();
+          desiredUnits.forEach((du) => {
+            const key = du.blockName || "";
+            if (!desiredByBlock.has(key)) desiredByBlock.set(key, []);
+            desiredByBlock.get(key).push(du);
+          });
+
+          const existingByBlock = new Map();
+          activeList.forEach((u) => {
+            const key = u.block_name || "";
+            if (!existingByBlock.has(key)) existingByBlock.set(key, []);
+            existingByBlock.get(key).push(u);
+          });
+
+          let createCounter = 0;
+          desiredByBlock.forEach((blockDesiredList, blockKey) => {
+            const blockExisting = existingByBlock.get(blockKey) || [];
+            blockDesiredList.forEach((du, idx) => {
+              let matchedUnit = blockExisting.find((eu) => !usedUnitIds.has(eu.id) && eu.unit_number === du.unitNumber && String(eu.floor) === String(du.floor));
+              if (!matchedUnit) {
+                matchedUnit = blockExisting.find((eu) => !usedUnitIds.has(eu.id) && eu.unit_number === du.unitNumber);
+              }
+              if (!matchedUnit && idx < blockExisting.length && !usedUnitIds.has(blockExisting[idx].id)) {
+                matchedUnit = blockExisting[idx];
+              }
+              if (!matchedUnit) {
+                matchedUnit = blockExisting.find((eu) => !usedUnitIds.has(eu.id));
+              }
+
+              if (matchedUnit) {
+                usedUnitIds.add(matchedUnit.id);
+                const nextArea = matchedUnit.status === "available" && defArea > 0 && (!matchedUnit.area || Number(matchedUnit.area) === Number(existingProj?.default_unit_area || 0))
+                  ? defArea
+                  : Number(matchedUnit.area || defArea);
+                const nextPrice = matchedUnit.status === "available" && defPrice > 0 && (!matchedUnit.price_per_meter || Number(matchedUnit.price_per_meter) === Number(existingProj?.default_price_per_meter || 0))
+                  ? defPrice
+                  : Number(matchedUnit.price_per_meter || defPrice);
+                unitStmts.push(
+                  env.DB.prepare(`
+                    UPDATE units SET unit_number = ?, block_name = ?, floor = ?, area = ?, useful_area = ?, price_per_meter = ?, total_price = ? WHERE id = ?
+                  `).bind(du.unitNumber, du.blockName, du.floor, nextArea, nextArea, nextPrice, nextArea * nextPrice, matchedUnit.id)
+                );
+              } else {
+                createCounter++;
+                const uId = "u_" + Date.now() + "_" + createCounter + "_" + Math.floor(Math.random() * 1000);
+                unitStmts.push(
+                  env.DB.prepare(`
+                    INSERT INTO units (id, project_id, unit_number, block_name, floor, sale_area_type, useful_area, storage_area, parking_area, common_area, area, price_per_meter, total_price, status, specific_expenses, is_deleted)
+                    VALUES (?, ?, ?, ?, ?, 'useful', ?, 0, 0, 0, ?, ?, ?, 'available', '[]', 0)
+                  `).bind(uId, pId, du.unitNumber, du.blockName, du.floor, defArea, defArea, defPrice, defArea * defPrice)
+                );
+              }
+            });
+          });
+
+          const nowShamsi = getTodayShamsiWorker();
+          let deletedExcessCount = 0;
+          activeList.forEach((eu) => {
+            if (!usedUnitIds.has(eu.id) && eu.status === "available") {
+              deletedExcessCount++;
+              unitStmts.push(
+                env.DB.prepare("UPDATE units SET is_deleted = 1, deleted_at = ? WHERE id = ?").bind(nowShamsi, eu.id)
+              );
+            }
+          });
+
+          const finalCount = (activeList.length - deletedExcessCount) + createCounter;
+          requestedUnitsCount = finalCount;
+          unitStmts.push(
+            env.DB.prepare("UPDATE projects SET number_of_units = ?, extra_json = ? WHERE id = ?").bind(
+              finalCount,
+              JSON.stringify({ ...p, id: pId, numberOfUnits: finalCount }),
+              pId
+            )
+          );
         }
 
         if (unitStmts.length > 0) {
@@ -2098,7 +2123,7 @@ export default {
         }
 
         const paidAmt = tx.isNonCash ? amountVal : payments.reduce((s, p) => s + Number(p.amount || 0), 0);
-        const approvalStatus = tx.approvalStatus || "approved";
+        const approvalStatus = tx.approvalStatus || (tx.type === "expense" ? "pending" : "approved");
         const approvedAmount = tx.approvedAmount !== undefined ? Number(tx.approvedAmount) : null;
         const approvedBy = tx.approvedBy || null;
         const approvedDate = tx.approvedDate || null;
@@ -2672,7 +2697,7 @@ export default {
           exp.description || "",
           exp.materialCategory || "سایر",
           exp.attachmentUrl || null,
-          exp.status || "approved",
+          exp.status || "pending",
           todayShamsi,
           exp.contactId || null,
           exp.personName || null,
@@ -2697,8 +2722,8 @@ export default {
         const contact = await env.DB.prepare("SELECT * FROM contacts WHERE id = ?").bind(fund.contact_id).first();
         const txId = "t_im_exp_" + id;
         await env.DB.prepare(`
-          INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, invoice_number, is_non_cash, attachment_name, payment_status, payments_json)
-          VALUES (?, 'c1', ?, 'expense', 'هزینه تنخواه', ?, ?, 'a3', ?, ?, ?, ?, 0, ?, ?, ?)
+          INSERT INTO transactions (id, company_id, project_id, type, category, sub_category, amount, account_id, person_name, date, description, invoice_number, is_non_cash, attachment_name, approval_status, payment_status, payments_json)
+          VALUES (?, 'c1', ?, 'expense', 'هزینه تنخواه', ?, ?, 'a3', ?, ?, ?, ?, 0, ?, 'pending', ?, ?)
         `).bind(
           txId,
           fund.project_id,
@@ -2820,61 +2845,29 @@ export default {
             area = ?,
             price_per_meter = ?,
             total_price = ?,
-            down_payment = ?
+            down_payment = 0
           WHERE id = ?
-        `).bind(buyerName, presale.contactId, id, presale.blockName || null, saleAreaType, usefulArea, storageArea, parkingArea, commonArea, computedArea, pricePerMeter, totalPrice, downPayment, presale.unitId).run();
+        `).bind(buyerName, presale.contactId, id, presale.blockName || null, saleAreaType, usefulArea, storageArea, parkingArea, commonArea, computedArea, pricePerMeter, totalPrice, presale.unitId).run();
 
-        const currentMs = Date.now();
-        const inst1 = downPayment;
-        const inst2 = Math.round(totalPrice * 0.10);
-        const inst3 = Math.round(totalPrice * 0.15);
-        const inst4 = Math.round(totalPrice * 0.15);
-        const inst5 = Math.round(totalPrice * 0.10);
-        const inst6 = Math.round(totalPrice * 0.10);
-        const inst7 = Math.max(0, totalPrice - (inst1 + inst2 + inst3 + inst4 + inst5 + inst6));
-
-        const installments = [
-          { name: "پیش‌پرداخت (عقد قرارداد)", dueDate: contractDate, amount: inst1, isPaid: 1, paidDate: contractDate },
-          { name: "پایان پی‌ریزی و فونداسیون", dueDate: addShamsiMonthsWorker(contractDate, 2), amount: inst2, isPaid: 0, paidDate: null },
-          { name: "پایان اسکلت و سازه", dueDate: addShamsiMonthsWorker(contractDate, 5), amount: inst3, isPaid: 0, paidDate: null },
-          { name: "پایان سفت‌کاری و دیوارچینی", dueDate: addShamsiMonthsWorker(contractDate, 8), amount: inst4, isPaid: 0, paidDate: null },
-          { name: "پایان نازک‌کاری و نصبیات", dueDate: addShamsiMonthsWorker(contractDate, 11), amount: inst5, isPaid: 0, paidDate: null },
-          { name: "تحویل فیزیکی واحد مسکونی", dueDate: addShamsiMonthsWorker(contractDate, 13), amount: inst6, isPaid: 0, paidDate: null },
-          { name: "تنظیم سند رسمی انتقال در دفترخانه", dueDate: addShamsiMonthsWorker(contractDate, 15), amount: inst7, isPaid: 0, paidDate: null }
-        ];
-
-        for (let i = 0; i < installments.length; i++) {
-          const inst = installments[i];
-          const instId = `psi_${i + 1}_${currentMs}`;
-          await env.DB.prepare(`
-            INSERT INTO pre_sale_installments (id, pre_sale_id, installment_name, due_date, amount, is_paid, paid_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).bind(instId, id, inst.name, inst.dueDate, inst.amount, inst.isPaid, inst.paidDate).run();
-        }
-
-        const defaultAccId = await getFirstAccountId(env, "a1");
-        const downAccountId = presale.accountId || defaultAccId;
-        const txId = "t_ps_down_" + currentMs;
-        await env.DB.prepare(`
-          INSERT INTO transactions (id, company_id, project_id, type, category, amount, account_id, person_name, date, description, is_non_cash, pre_sale_id, contact_id, payment_status)
-          VALUES (?, 'c1', ?, 'income', 'پیش‌فروش', ?, ?, ?, ?, 'پیش‌دریافت پیش‌پرداخت قرارداد پیش‌فروش واحد', 0, ?, ?, 'paid')
-        `).bind(txId, presale.projectId, downPayment, downAccountId, buyerName, contractDate, id, presale.contactId).run();
-
-        await env.DB.prepare("UPDATE accounts SET balance = balance + ? WHERE id = ?").bind(downPayment, downAccountId).run();
-
+        // Requirement 3 & 5: Do NOT create any default installments or auto downpayment on contract creation.
+        // Buyer becomes debtor for the full contract totalPrice.
         if (buyer) {
-          const newBuyerBalance = (Number(buyer.balance || 0) + totalPrice) - downPayment;
+          const newBuyerBalance = Number(buyer.balance || 0) + totalPrice;
           await env.DB.prepare("UPDATE contacts SET balance = ? WHERE id = ?").bind(newBuyerBalance, presale.contactId).run();
         }
 
-        return new Response(JSON.stringify({ status: "success", id }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ status: "success", id, installments: [] }), { headers: corsHeaders });
       }
 
       // 9f. Pay Pre-Sale Installment
       if (path === "/api/presales/installments/pay" && method === "POST") {
         await ensureDatabaseSchema(env);
         const body = await request.json();
-        const { installmentId, accountId, paidDate } = body;
+        const { installmentId, accountId, paidDate, sourceAccount, referenceNumber } = body;
+
+        if (!accountId) {
+          return new Response(JSON.stringify({ error: "انتخاب حساب دریافتی (بانک یا صندوق شرکت) الزامی است" }), { status: 400, headers: corsHeaders });
+        }
 
         const inst = await env.DB.prepare("SELECT * FROM pre_sale_installments WHERE id = ?").bind(installmentId).first();
         if (!inst) {
@@ -2898,29 +2891,40 @@ export default {
           const unitNo = unit ? unit.unit_number : "";
 
           const txId = "t_ps_inst_" + Date.now();
-          const defaultAccId = await getFirstAccountId(env, "a1");
-          const accId = accountId || defaultAccId;
+          const accId = accountId;
+          const payAmt = Number(inst.amount || 0);
+          const payments = [{
+            id: "p_psi_" + Date.now(),
+            rowNumber: 1,
+            amount: payAmt,
+            date: datePaid,
+            accountId: accId,
+            sourceAccount: sourceAccount || buyerName,
+            referenceNumber: referenceNumber || "تسویه قسط"
+          }];
           await env.DB.prepare(`
-            INSERT INTO transactions (id, company_id, project_id, type, category, amount, account_id, person_name, date, description, is_non_cash, pre_sale_id, contact_id, payment_status)
-            VALUES (?, 'c1', ?, 'income', 'پیش‌فروش', ?, ?, ?, ?, ?, 0, ?, ?, 'paid')
+            INSERT INTO transactions (id, company_id, project_id, type, category, amount, account_id, person_name, date, description, is_non_cash, pre_sale_id, contact_id, payment_status, payments_json, extra_json)
+            VALUES (?, 'c1', ?, 'income', 'پیش‌فروش', ?, ?, ?, ?, ?, 0, ?, ?, 'paid', ?, ?)
           `).bind(
             txId,
             presale.project_id,
-            Number(inst.amount),
+            payAmt,
             accId,
             buyerName,
             datePaid,
             `دریافت قسط "${inst.installment_name}" قرارداد پیش‌فروش واحد ${unitNo}`,
             presale.id,
-            presale.contact_id
+            presale.contact_id,
+            JSON.stringify(payments),
+            JSON.stringify({ sourceAccount: sourceAccount || buyerName })
           ).run();
 
           await env.DB.prepare("UPDATE accounts SET balance = balance + ? WHERE id = ?")
-            .bind(Number(inst.amount), accId)
+            .bind(payAmt, accId)
             .run();
 
           if (buyer) {
-            const newBuyerBal = Math.max(0, Number(buyer.balance || 0) - Number(inst.amount));
+            const newBuyerBal = Math.max(0, Number(buyer.balance || 0) - payAmt);
             await env.DB.prepare("UPDATE contacts SET balance = ? WHERE id = ?").bind(newBuyerBal, presale.contact_id).run();
           }
         }
@@ -2932,17 +2936,19 @@ export default {
       if (path === "/api/presales/payments/add" && method === "POST") {
         await ensureDatabaseSchema(env);
         const body = await request.json();
-        const { preSaleId, amount, accountId, paidDate, referenceNumber, invoiceNumber, invoiceDescription, description } = body;
+        const { preSaleId, amount, accountId, sourceAccount, paidDate, referenceNumber, invoiceNumber, invoiceDescription, description } = body;
+        if (!accountId) {
+          return new Response(JSON.stringify({ error: "انتخاب حساب دریافتی (بانک یا صندوق شرکت) الزامی است." }), { status: 400, headers: corsHeaders });
+        }
         const presale = await env.DB.prepare("SELECT * FROM pre_sales WHERE id = ?").bind(preSaleId).first();
         if (!presale) {
           return new Response(JSON.stringify({ error: "قرارداد پیش‌فروش یافت نشد" }), { status: 404, headers: corsHeaders });
         }
         const buyer = await env.DB.prepare("SELECT * FROM contacts WHERE id = ?").bind(presale.contact_id).first();
         const unit = await env.DB.prepare("SELECT * FROM units WHERE id = ?").bind(presale.unit_id).first();
-        const defaultAccId = await getFirstAccountId(env, "a1");
-        const resolvedAccountId = accountId || defaultAccId;
+        const resolvedAccountId = accountId;
         const payVal = Number(amount || 0);
-        const finalDesc = description || invoiceDescription || `دریافت پرداختی پیش‌فروش واحد ${unit ? unit.unit_number : ""} - شماره سند ${referenceNumber || ""}`;
+        const finalDesc = description || invoiceDescription || `دریافت پرداختی (آورده) قرارداد پیش‌فروش واحد ${unit ? unit.unit_number : ""}${referenceNumber ? ` - شماره پیگیری ${referenceNumber}` : ""}`;
         const txId = "t_ps_pay_" + Date.now();
         const payments = [{
           id: "p_psp_" + Date.now(),
@@ -2950,6 +2956,7 @@ export default {
           amount: payVal,
           date: paidDate,
           accountId: resolvedAccountId,
+          sourceAccount: sourceAccount || (buyer ? buyer.name : ""),
           referenceNumber,
           invoiceNumber: invoiceNumber || "",
           invoiceDescription: invoiceDescription || finalDesc,
@@ -2957,9 +2964,22 @@ export default {
         }];
 
         await env.DB.prepare(`
-          INSERT INTO transactions (id, company_id, project_id, type, category, amount, account_id, person_name, date, description, invoice_number, is_non_cash, pre_sale_id, contact_id, payment_status, payments_json)
-          VALUES (?, 'c1', ?, 'income', 'پیش‌فروش', ?, ?, ?, ?, ?, ?, 0, ?, ?, 'paid', ?)
-        `).bind(txId, presale.project_id, payVal, resolvedAccountId, buyer ? buyer.name : "پیش‌خریدار", paidDate, finalDesc, invoiceNumber || "", preSaleId, presale.contact_id, JSON.stringify(payments)).run();
+          INSERT INTO transactions (id, company_id, project_id, type, category, amount, account_id, person_name, date, description, invoice_number, is_non_cash, pre_sale_id, contact_id, payment_status, payments_json, extra_json)
+          VALUES (?, 'c1', ?, 'income', 'پیش‌فروش', ?, ?, ?, ?, ?, ?, 0, ?, ?, 'paid', ?, ?)
+        `).bind(
+          txId,
+          presale.project_id,
+          payVal,
+          resolvedAccountId,
+          buyer ? buyer.name : "پیش‌خریدار",
+          paidDate,
+          finalDesc,
+          invoiceNumber || "",
+          preSaleId,
+          presale.contact_id,
+          JSON.stringify(payments),
+          JSON.stringify({ sourceAccount: sourceAccount || (buyer ? buyer.name : "") })
+        ).run();
 
         await env.DB.prepare("UPDATE accounts SET balance = balance + ? WHERE id = ?").bind(payVal, resolvedAccountId).run();
         if (buyer) {
